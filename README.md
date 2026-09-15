@@ -6,18 +6,31 @@ schematics (your **commanded** angles vs. the boat's **actual** reported angles)
 full XBee telemetry panel, and a raw serial log — with automatic COM-port detection and
 ST-Link auto-connect.
 
-> **Platform:** Windows. The app talks to the controller over its ST-Link Virtual COM
+> **Platform:** Windows and macOS. The app talks to the controller over its ST-Link Virtual COM
 > port.
+
+## Quick start (macOS)
+
+From Terminal, in this project folder:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python sailboat_monitor.py
+```
+
+After setup, you can also double-click **`launch.command`** in Finder to start the
+monitor. On macOS, allow Terminal to open the first time Finder asks.
 
 ---
 
 ## What you need
 
 1. **Python** (installed correctly — see below).
-2. Two Python packages: **`customtkinter`** and **`pyserial`** (listed in `requirements.txt`, installed in one step below).
+2. The Python packages listed in `requirements.txt` (installed in one step below).
 3. This project's files (`sailboat_monitor.py`).
 
-If you already have Python on your PATH, skip to the [Quick start](#quick-start-if-you-already-have-python).
+If you already have Python on your PATH, skip to the platform-specific quick-start section below.
 
 ---
 
@@ -178,13 +191,14 @@ see the error message instead of a window that silently never appears.)
 
 ---
 
-## Quick start (if you already have Python)
+## Quick start (Windows, if you already have Python)
 
 From the project folder:
 
 ```
-pip install -r requirements.txt
-python sailboat_monitor.py
+py -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe sailboat_monitor.py
 ```
 
 ---
@@ -225,4 +239,3 @@ measurement accuracy; the depth values remain approximate historical-map estimat
 Each custom grid contains its own geographic bounds, spacing and nominal uncertainty.
 `prepare_lake_depth.py` now prepares only the visual overlay; it does not perform OCR,
 contour detection or depth interpolation.
-
