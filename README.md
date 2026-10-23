@@ -166,9 +166,9 @@ see the error message instead of a window that silently never appears.)
 
 The boat simulator in the firmware repo (`windbound-firmware/sim`, see its
 README) serves the same serial lines as the controller over a local network
-port. Start it with `python -m windbound_sim serve` (or `run <scenario> --link`),
-then pick **Simulator — socket://127.0.0.1:5760** from the **COM Port** list and
-click **Connect**. Any other pyserial URL, such as
+port. Start it from the `windbound-firmware` folder with `python3 sim/start.py`
+(Windows: `py sim\start.py`), then pick **Simulator — socket://127.0.0.1:5760**
+from the **COM Port** list and click **Connect**. Any other pyserial URL, such as
 `socket://192.168.1.20:5760`, can be typed into the COM Port box.
 
 ---
