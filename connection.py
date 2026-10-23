@@ -21,6 +21,12 @@ from serial_io import is_stlink, SerialReader
 BAUD_RATES  = ["9600", "19200", "38400", "57600", "115200", "230400", "460800"]
 PORT_POLL_MS = 1000  # how often to scan for COM-port hot-plug / unplug
 
+# The boat simulator (windbound-firmware/sim) serves the controller's serial
+# output on this TCP port. Any other pyserial URL can also be typed into the
+# COM Port box, e.g. socket://192.168.1.20:5760.
+SIMULATOR_URL   = "socket://127.0.0.1:5760"
+SIMULATOR_LABEL = f"Simulator — {SIMULATOR_URL}"
+
 # The sail is a continuous-rotation drive, not a positional servo: a negative
 # command spins it anti-clockwise (viewed from above), a positive command spins
 # it clockwise, both at a constant slew rate. The COMMANDED boat integrates this
@@ -89,13 +95,12 @@ class ConnectionMixin:
                 display.append(label)
             if not display:
                 display = ["(no ports found)"]
-                self.port_combo.configure(values=display)
+            display.append(SIMULATOR_LABEL)
+            self.port_map[SIMULATOR_LABEL] = SIMULATOR_URL
+            self.port_combo.configure(values=display)
+            # keep current selection if still present, else pick first
+            if self.port_combo.get() not in self.port_map:
                 self.port_combo.set(display[0])
-            else:
-                self.port_combo.configure(values=display)
-                # keep current selection if still present, else pick first
-                if self.port_combo.get() not in self.port_map:
-                    self.port_combo.set(display[0])
     
         # ----- appearance ----------------------------------------------------- #
     
@@ -164,8 +169,9 @@ class ConnectionMixin:
                      retrying watcher doesn't spam the log on a busy port.
             """
             if device is None:
-                sel = self.port_combo.get()
-                device = self.port_map.get(sel)
+                sel = self.port_combo.get().strip()
+                # A typed pyserial URL (socket://host:port) is used as-is.
+                device = self.port_map.get(sel) or (sel if "://" in sel else None)
             if not device:
                 if not quiet:
                     self.append_log("** No valid COM port selected. Click Refresh. **")
@@ -175,7 +181,8 @@ class ConnectionMixin:
             except ValueError:
                 baud = 115200
             try:
-                self.ser = serial.Serial(device, baud, timeout=0.2)
+                # serial_for_url opens COM ports and socket:// URLs alike.
+                self.ser = serial.serial_for_url(device, baud, timeout=0.2)
             except (serial.SerialException, OSError) as e:
                 if not quiet:
                     self.append_log(f"** Could not open {device}: {e} **")
