@@ -18,15 +18,12 @@ large amount of unnecessary network traffic when panning/zooming.
 """
 
 import io
-import json
 import math
 import os
-import re
 import sqlite3
 import threading
 import time
 import tkinter as tk
-from email.utils import parsedate_to_datetime
 
 import customtkinter as ctk
 
@@ -37,83 +34,22 @@ from waypoints import (
     ROUTE_SAFE_COLOR, ROUTE_CAUTION_COLOR, ROUTE_DANGER_COLOR,
     ROUTE_UNKNOWN_COLOR,
 )
+from lake_depth import (  # noqa: F401
+    LAKE_DEPTH_DIR, LAKE_DEPTH_OFF, LAKE_DEPTH_DEFAULT_OPACITY,
+    NS_LAKE_DEPTH_ATTRIBUTION, LAKE_DEPTH_BOUND_OVERRIDES,
+    LakeDepthRaster, discover_lake_depth_layers,
+)
+from tile_cache import (  # noqa: F401
+    MAP_CACHE_DIR, MAP_CACHE_DB, OPENSEAMAP_TILE_SERVER, OPENSEAMAP_MAX_ZOOM,
+    VIEW_TILE_FALLBACK_TTL_S, MAP_USER_AGENT, TILE_SERVERS,
+    TileCache, prepare_tile_cache_database,
+)
 
 
 # Map defaults
 DEFAULT_MAP_LAT   = 44.6488     # Halifax, NS
 DEFAULT_MAP_LON   = -63.5752
 DEFAULT_MAP_ZOOM  = 12
-MAP_CACHE_DIR     = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "map_downloads")
-MAP_CACHE_DB      = os.path.join(MAP_CACHE_DIR, "tiles.db")
-
-OPENSEAMAP_TILE_SERVER = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
-OPENSEAMAP_MAX_ZOOM = 18
-
-# Normal viewed tiles are cached persistently. Seven days is also the minimum
-# fallback cache lifetime requested by the public OpenStreetMap tile policy
-# when no useful HTTP cache header is supplied.
-VIEW_TILE_FALLBACK_TTL_S = 7 * 24 * 60 * 60
-
-# Identify this application instead of using tkintermapview's generic UA.
-MAP_USER_AGENT = "SailboatGroundStationMonitor/1.0 (TkinterMapView)"
-
-TILE_SERVERS = {
-    "CartoDB Voyager": "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-    "OpenStreetMap":   "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    "CartoDB Light":   "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-    "CartoDB Dark":    "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-}
-
-# Locally processed Nova Scotia lake-inventory bathymetry. Each lake lives in
-# its own subdirectory and contains an RGBA PNG plus metadata.json. Keeping
-# these overlays local makes them instant/offline once a lake has been
-# prepared, and avoids repeatedly downloading the old inventory PDFs.
-LAKE_DEPTH_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "lake_depth_maps")
-LAKE_DEPTH_OFF = "Off"
-LAKE_DEPTH_DEFAULT_OPACITY = 0.72
-
-# Surface a concise accuracy warning whenever a bathymetry layer is on.
-NS_LAKE_DEPTH_ATTRIBUTION = (
-    "Lake depth: Nova Scotia Fisheries & Aquaculture Lake Inventory "
-    "- Bathymetry may not be accurate")
-
-# Temporary per-lake alignment overrides so the latest map_view.py can fix
-# previously packaged lake layers without requiring the user to manually edit
-# each metadata.json. If a packaged lake is updated later, these values can be
-# removed or replaced by the corrected metadata.
-LAKE_DEPTH_BOUND_OVERRIDES = {
-    "lake micmac": {
-        # Bounds after the first-point translation correction.
-        "north": 44.6997751,
-        "south": 44.6845151,
-        "west": -63.5621433,
-        "east": -63.5467633,
-        # Similarity transform solved from the second control point.
-        # Positive rotation is counter-clockwise on the map.
-        "transform": {
-            "anchor_lat": 44.6940442,
-            "anchor_lon": -63.5602020,
-            "scale": 1.0483028,
-            "rotation_deg": -3.3474663,
-        },
-    },
-    "lake charles": {
-        # Bounds after the first-point translation correction.
-        "north": 44.7373715,
-        "south": 44.7084315,
-        "west": -63.5563978,
-        "east": -63.5450578,
-        # Similarity transform solved from the second control point.
-        "transform": {
-            "anchor_lat": 44.7158269,
-            "anchor_lon": -63.5537399,
-            "scale": 1.0762620,
-            "rotation_deg": 3.1613348,
-        },
-    },
-}
 
 # Common OpenSeaMap symbols the operator is most likely to encounter while
 # setting waypoints on lakes or near shore. This is a compact, operator-focused
@@ -146,505 +82,9 @@ NAUTICAL_LEGEND_ITEMS = [
 ]
 
 
-def _webmercator_y(lat):
-    """Return normalized Web-Mercator Y (0..1) for latitude in degrees."""
-    lat = max(-85.05112878, min(85.05112878, float(lat)))
-    r = math.radians(lat)
-    return (1.0 - math.asinh(math.tan(r)) / math.pi) / 2.0
-
-
-def _webmercator_x(lon):
-    """Return normalized Web-Mercator X (0..1) for longitude in degrees."""
-    return (float(lon) + 180.0) / 360.0
-
-
-def _webmercator_lon(x):
-    """Convert normalized Web-Mercator X back to longitude."""
-    return float(x) * 360.0 - 180.0
-
-
-def _webmercator_lat(y):
-    """Convert normalized Web-Mercator Y back to latitude."""
-    n = math.pi * (1.0 - 2.0 * float(y))
-    return math.degrees(math.atan(math.sinh(n)))
-
-
-class LakeDepthRaster:
-    """Local bathymetry raster with translation, scale and rotation correction.
-
-    The original Nova Scotia inventory map is first georeferenced by a simple
-    north/south/east/west bounding box.  A per-lake similarity transform may
-    then be applied around a known-good geographic anchor::
-
-        transform = {
-            "anchor_lat": 44.6940442,
-            "anchor_lon": -63.5602020,
-            "scale": 1.0483,
-            "rotation_deg": -3.3475,
-        }
-
-    This is much more accurate than trying to represent a rotated scan using
-    only axis-aligned bounds.  The transform is performed in Web-Mercator
-    space, the same projection used by the XYZ base-map tiles, so the contours
-    stay aligned while panning and zooming.
-    """
-
-    _TILE_CACHE_LIMIT = 600
-
-    def __init__(self, metadata_path):
-        from PIL import Image
-
-        self.metadata_path = os.path.abspath(metadata_path)
-        self.package_dir = os.path.dirname(self.metadata_path)
-        with open(self.metadata_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-
-        self.name = str(meta.get("name") or os.path.basename(self.package_dir))
-        image_name = meta.get("image", "overlay.png")
-        self.image_path = os.path.join(self.package_dir, image_name)
-        if not os.path.isfile(self.image_path):
-            raise FileNotFoundError(self.image_path)
-
-        bounds = dict(meta.get("bounds") or {})
-        transform = dict(meta.get("transform") or {})
-
-        # Code-side overrides make it possible to calibrate the supplied lake
-        # packages without requiring every existing metadata.json to be edited.
-        override = LAKE_DEPTH_BOUND_OVERRIDES.get(self.name.strip().lower())
-        if override:
-            for k in ("north", "south", "west", "east"):
-                if k in override:
-                    bounds[k] = override[k]
-            if override.get("transform"):
-                transform.update(override["transform"])
-
-        self.north = float(bounds["north"])
-        self.south = float(bounds["south"])
-        self.west = float(bounds["west"])
-        self.east = float(bounds["east"])
-        if not (self.north > self.south and self.east > self.west):
-            raise ValueError("invalid depth-map bounds")
-
-        self.preferred_zoom = int(meta.get("preferred_zoom", 15))
-        self.source_url = str(meta.get("source_url", ""))
-        self.notes = str(meta.get("notes", ""))
-        self.default_opacity = float(
-            meta.get("opacity", LAKE_DEPTH_DEFAULT_OPACITY))
-        self.default_opacity = max(0.05, min(1.0, self.default_opacity))
-
-        # Similarity transform for the visual PDF overlay. Numeric depth grids
-        # are already stored north-up in geographic coordinates, but the image
-        # overlay still uses this calibration when rendered into XYZ tiles.
-        self.transform_scale = float(transform.get("scale", 1.0))
-        if self.transform_scale <= 0:
-            raise ValueError("lake-depth transform scale must be > 0")
-        self.rotation_deg = float(transform.get("rotation_deg", 0.0))
-        self.rotation_rad = math.radians(self.rotation_deg)
-        self._rot_c = math.cos(self.rotation_rad)
-        self._rot_s = math.sin(self.rotation_rad)
-
-        default_anchor_lat = (self.north + self.south) / 2.0
-        default_anchor_lon = (self.west + self.east) / 2.0
-        self.anchor_lat = float(transform.get("anchor_lat", default_anchor_lat))
-        self.anchor_lon = float(transform.get("anchor_lon", default_anchor_lon))
-        self._anchor_wx = _webmercator_x(self.anchor_lon)
-        self._anchor_wy = _webmercator_y(self.anchor_lat)
-
-        with Image.open(self.image_path) as img:
-            img.load()
-            self.image = img.convert("RGBA")
-
-        self._tile_cache = {}
-        self._tile_cache_lock = threading.Lock()
-
-        # Axis-aligned pre-transform raster bounds in Web-Mercator.
-        self._wx0 = _webmercator_x(self.west)
-        self._wx1 = _webmercator_x(self.east)
-        self._wy0 = _webmercator_y(self.north)
-        self._wy1 = _webmercator_y(self.south)
-        self._layer_wx = self._wx1 - self._wx0
-        self._layer_wy = self._wy1 - self._wy0
-
-        # Numeric depth values come from a precomputed static grid stored next
-        # to the visual overlay.  The GUI never tries to interpret contour ink.
-        # This keeps runtime behaviour deterministic and makes the depth data
-        # easy to inspect/replace without changing application code.
-        self.depth_grid_name = str(meta.get("depth_grid", "depth_grid.npz"))
-        self.depth_grid_path = os.path.join(self.package_dir, self.depth_grid_name)
-        self.depth_grid = None
-        self.depth_grid_spacing_m = None
-        self.depth_uncertainty_m = max(
-            0.1, float(meta.get("depth_uncertainty_m", 1.0)))
-        self._depth_grid_ready = False
-        self._depth_grid_error = None
-        self._load_depth_grid()
-
-        # A stable identity for the composite RAM cache.  Transform values are
-        # included so changing calibration immediately creates a fresh variant.
-        stat_img = os.stat(self.image_path)
-        stat_meta = os.stat(self.metadata_path)
-        if os.path.isfile(self.depth_grid_path):
-            stat_grid = os.stat(self.depth_grid_path)
-            grid_identity = (stat_grid.st_mtime_ns, stat_grid.st_size)
-        else:
-            grid_identity = None
-        self.cache_id = (
-            self.name, self.image_path, stat_img.st_mtime_ns, stat_img.st_size,
-            stat_meta.st_mtime_ns, stat_meta.st_size, grid_identity,
-            round(self.anchor_lat, 8), round(self.anchor_lon, 8),
-            round(self.transform_scale, 8), round(self.rotation_deg, 8),
-            round(self.north, 8), round(self.south, 8),
-            round(self.west, 8), round(self.east, 8))
-
-    # ------------------------------------------------------------------ #
-    # Similarity transform helpers
-    # ------------------------------------------------------------------ #
-
-    def _forward_transform(self, wx, wy):
-        """Map pre-transform Web-Mercator coordinate to calibrated position."""
-        # Use north-positive local coordinates for intuitive rotation signs.
-        dx = wx - self._anchor_wx
-        dy_north = self._anchor_wy - wy
-
-        x2 = self.transform_scale * (
-            self._rot_c * dx - self._rot_s * dy_north)
-        y2_north = self.transform_scale * (
-            self._rot_s * dx + self._rot_c * dy_north)
-
-        return (self._anchor_wx + x2,
-                self._anchor_wy - y2_north)
-
-    def _inverse_transform(self, wx, wy):
-        """Map calibrated Web-Mercator coordinate back into source-raster space."""
-        dx2 = wx - self._anchor_wx
-        dy2_north = self._anchor_wy - wy
-        inv = 1.0 / self.transform_scale
-
-        # R(-theta) / scale.
-        dx = inv * (self._rot_c * dx2 + self._rot_s * dy2_north)
-        dy_north = inv * (-self._rot_s * dx2 + self._rot_c * dy2_north)
-
-        return (self._anchor_wx + dx,
-                self._anchor_wy - dy_north)
-
-    def _source_pixel_for_tile_pixel(self, px, py, tx0, ty0,
-                                     tile_span, tile_size):
-        """Return source-image pixel corresponding to one output tile pixel."""
-        wx_out = tx0 + (float(px) / tile_size) * tile_span
-        wy_out = ty0 + (float(py) / tile_size) * tile_span
-        wx_src, wy_src = self._inverse_transform(wx_out, wy_out)
-
-        src_w, src_h = self.image.size
-        sx = (wx_src - self._wx0) / self._layer_wx * src_w
-        sy = (wy_src - self._wy0) / self._layer_wy * src_h
-        return sx, sy
-
-    # ------------------------------------------------------------------ #
-    # Static numeric bathymetry grid
-    # ------------------------------------------------------------------ #
-
-    def _load_depth_grid(self):
-        """Load a precomputed north-up depth grid from ``depth_grid.npz``.
-
-        Required NPZ fields:
-            depth_m       2-D float array; NaN means land/unmapped
-            north/south/west/east
-
-        Optional fields:
-            spacing_m
-            uncertainty_m
-
-        No contour detection, OCR or image analysis is performed here.
-        """
-        if not os.path.isfile(self.depth_grid_path):
-            self._depth_grid_error = f"missing {self.depth_grid_name}"
-            return
-
-        try:
-            import numpy as np
-
-            with np.load(self.depth_grid_path, allow_pickle=False) as data:
-                depth = np.asarray(data["depth_m"], dtype=np.float32)
-                if depth.ndim != 2 or depth.shape[0] < 2 or depth.shape[1] < 2:
-                    raise ValueError("depth_m must be a 2-D grid of at least 2x2")
-
-                north = float(data["north"])
-                south = float(data["south"])
-                west = float(data["west"])
-                east = float(data["east"])
-                if not (north > south and east > west):
-                    raise ValueError("invalid depth-grid geographic bounds")
-
-                self.depth_grid = depth
-                self.depth_grid_north = north
-                self.depth_grid_south = south
-                self.depth_grid_west = west
-                self.depth_grid_east = east
-
-                if "spacing_m" in data.files:
-                    self.depth_grid_spacing_m = float(data["spacing_m"])
-                if "uncertainty_m" in data.files:
-                    self.depth_uncertainty_m = max(
-                        0.1, float(data["uncertainty_m"]))
-
-            self._depth_grid_ready = True
-            self._depth_grid_error = None
-        except Exception as exc:
-            self.depth_grid = None
-            self._depth_grid_ready = False
-            self._depth_grid_error = str(exc)
-
-    def depth_at(self, lat, lon):
-        """Return bilinearly interpolated depth from the static grid.
-
-        Returns ``None`` outside the grid or over land/unmapped cells.
-        ``depth_m`` is an approximate value from the prepared PDF-derived grid;
-        ``uncertainty_m`` is the nominal error assigned to that lake package.
-        """
-        if not self._depth_grid_ready or self.depth_grid is None:
-            return None
-
-        lat = float(lat)
-        lon = float(lon)
-        if not (self.depth_grid_south <= lat <= self.depth_grid_north and
-                self.depth_grid_west <= lon <= self.depth_grid_east):
-            return None
-
-        import numpy as np
-
-        rows, cols = self.depth_grid.shape
-        fy = ((self.depth_grid_north - lat) /
-              (self.depth_grid_north - self.depth_grid_south)) * (rows - 1)
-        fx = ((lon - self.depth_grid_west) /
-              (self.depth_grid_east - self.depth_grid_west)) * (cols - 1)
-
-        # Do not smear a water value onto adjacent land when interpolating at
-        # the shoreline. The nearest 1 m cell must itself contain water.
-        nearest_x = max(0, min(cols - 1, int(round(fx))))
-        nearest_y = max(0, min(rows - 1, int(round(fy))))
-        if not np.isfinite(self.depth_grid[nearest_y, nearest_x]):
-            return None
-
-        x0 = max(0, min(cols - 1, int(math.floor(fx))))
-        y0 = max(0, min(rows - 1, int(math.floor(fy))))
-        x1 = min(cols - 1, x0 + 1)
-        y1 = min(rows - 1, y0 + 1)
-        tx = max(0.0, min(1.0, fx - x0))
-        ty = max(0.0, min(1.0, fy - y0))
-
-        samples = (
-            (self.depth_grid[y0, x0], (1.0 - tx) * (1.0 - ty)),
-            (self.depth_grid[y0, x1], tx * (1.0 - ty)),
-            (self.depth_grid[y1, x0], (1.0 - tx) * ty),
-            (self.depth_grid[y1, x1], tx * ty),
-        )
-        weighted = 0.0
-        total_weight = 0.0
-        for value, weight in samples:
-            if np.isfinite(value) and weight > 0.0:
-                weighted += float(value) * weight
-                total_weight += weight
-
-        if total_weight <= 1e-9:
-            return None
-
-        depth_m = max(0.0, weighted / total_weight)
-        return {
-            "depth_m": float(depth_m),
-            "uncertainty_m": float(self.depth_uncertainty_m),
-            "grid_spacing_m": self.depth_grid_spacing_m,
-        }
-
-    @property
-    def center(self):
-        """Geographic centre after the calibration transform is applied."""
-        wx = (self._wx0 + self._wx1) / 2.0
-        wy = (self._wy0 + self._wy1) / 2.0
-        wx, wy = self._forward_transform(wx, wy)
-        return (_webmercator_lat(wy), _webmercator_lon(wx))
-
-    def render_tile(self, zoom, x, y, tile_size, opacity=1.0):
-        """Render the calibrated raster into one transparent XYZ tile."""
-        from PIL import Image
-
-        opacity = max(0.0, min(1.0, float(opacity)))
-        if opacity <= 0.0:
-            return None
-
-        key = (int(zoom), int(x), int(y), int(tile_size), round(opacity, 3))
-        with self._tile_cache_lock:
-            cached = self._tile_cache.get(key)
-            if cached is not None:
-                return cached.copy()
-
-        n = float(2 ** int(zoom))
-        tile_span = 1.0 / n
-        tx0 = x * tile_span
-        ty0 = y * tile_span
-
-        # PIL's affine transform needs output->input mapping.  The whole
-        # georeferencing + rotation + scale chain is affine in Web-Mercator, so
-        # three sample points give exact coefficients for this tile.
-        p00 = self._source_pixel_for_tile_pixel(
-            0.0, 0.0, tx0, ty0, tile_span, tile_size)
-        p10 = self._source_pixel_for_tile_pixel(
-            1.0, 0.0, tx0, ty0, tile_span, tile_size)
-        p01 = self._source_pixel_for_tile_pixel(
-            0.0, 1.0, tx0, ty0, tile_span, tile_size)
-
-        a = p10[0] - p00[0]
-        b = p01[0] - p00[0]
-        c = p00[0]
-        d = p10[1] - p00[1]
-        e = p01[1] - p00[1]
-        f = p00[1]
-
-        # Fast reject: map the output tile corners to source coordinates and
-        # skip tiles whose inverse-projected footprint cannot touch the image.
-        src_w, src_h = self.image.size
-        corners = [
-            self._source_pixel_for_tile_pixel(
-                0, 0, tx0, ty0, tile_span, tile_size),
-            self._source_pixel_for_tile_pixel(
-                tile_size, 0, tx0, ty0, tile_span, tile_size),
-            self._source_pixel_for_tile_pixel(
-                0, tile_size, tx0, ty0, tile_span, tile_size),
-            self._source_pixel_for_tile_pixel(
-                tile_size, tile_size, tx0, ty0, tile_span, tile_size),
-        ]
-        min_sx = min(v[0] for v in corners)
-        max_sx = max(v[0] for v in corners)
-        min_sy = min(v[1] for v in corners)
-        max_sy = max(v[1] for v in corners)
-        if max_sx < 0 or min_sx > src_w or max_sy < 0 or min_sy > src_h:
-            return None
-
-        if hasattr(Image, "Transform"):
-            affine_mode = Image.Transform.AFFINE
-        else:
-            affine_mode = Image.AFFINE
-        if hasattr(Image, "Resampling"):
-            resample = Image.Resampling.BICUBIC
-        else:
-            resample = Image.BICUBIC
-
-        tile = self.image.transform(
-            (tile_size, tile_size),
-            affine_mode,
-            (a, b, c, d, e, f),
-            resample=resample,
-            fillcolor=(0, 0, 0, 0))
-
-        if opacity < 0.999:
-            alpha = tile.getchannel("A").point(lambda av: int(av * opacity))
-            tile.putalpha(alpha)
-
-        # Do not keep completely transparent tiles in memory.
-        if tile.getbbox() is None:
-            return None
-
-        with self._tile_cache_lock:
-            self._tile_cache[key] = tile.copy()
-            excess = len(self._tile_cache) - self._TILE_CACHE_LIMIT
-            if excess > 0:
-                for old_key in list(self._tile_cache.keys())[:excess]:
-                    self._tile_cache.pop(old_key, None)
-        return tile
-
-
-def _discover_lake_depth_layers(directory=LAKE_DEPTH_DIR):
-    """Return {display_name: LakeDepthRaster} for valid local packages."""
-    layers = {}
-    if not os.path.isdir(directory):
-        return layers
-    for root, _, files in os.walk(directory):
-        if "metadata.json" not in files:
-            continue
-        meta_path = os.path.join(root, "metadata.json")
-        try:
-            layer = LakeDepthRaster(meta_path)
-            # Disambiguate duplicate names without hiding either package.
-            name = layer.name
-            if name in layers:
-                suffix = 2
-                while f"{name} ({suffix})" in layers:
-                    suffix += 1
-                name = f"{name} ({suffix})"
-            layers[name] = layer
-        except Exception:
-            # One malformed package should not prevent the map window opening.
-            continue
-    return layers
-
-
-def _prepare_tile_cache_database(path):
-    """Create/tune the shared SQLite tile cache before map threads start."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA cache_size=-32768")       # ~32 MiB SQLite page cache
-        conn.execute("PRAGMA busy_timeout=5000")
-
-        # Same core schema used by tkintermapview. Keeping it compatible means
-        # OfflineLoader and the normal map can share one database.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS server (
-                url VARCHAR(300) PRIMARY KEY NOT NULL,
-                max_zoom INTEGER NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS tiles (
-                zoom INTEGER NOT NULL,
-                x INTEGER NOT NULL,
-                y INTEGER NOT NULL,
-                server VARCHAR(300) NOT NULL,
-                tile_image BLOB NOT NULL,
-                CONSTRAINT fk_server FOREIGN KEY (server) REFERENCES server (url),
-                CONSTRAINT pk_tiles PRIMARY KEY (zoom, x, y, server)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sections (
-                position_a VARCHAR(100) NOT NULL,
-                position_b VARCHAR(100) NOT NULL,
-                zoom_a INTEGER NOT NULL,
-                zoom_b INTEGER NOT NULL,
-                server VARCHAR(300) NOT NULL,
-                CONSTRAINT fk_server FOREIGN KEY (server) REFERENCES server (url),
-                CONSTRAINT pk_sections
-                    PRIMARY KEY (position_a, position_b, zoom_a, zoom_b, server)
-            )
-        """)
-
-        # Extra metadata used only by this application. Tiles inserted by
-        # tkintermapview's OfflineLoader have no row here and are therefore
-        # treated as intentionally-offline/permanent tiles.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS tile_cache_meta (
-                zoom INTEGER NOT NULL,
-                x INTEGER NOT NULL,
-                y INTEGER NOT NULL,
-                server VARCHAR(300) NOT NULL,
-                cached_at REAL NOT NULL,
-                expires_at REAL NOT NULL,
-                etag TEXT,
-                last_modified TEXT,
-                CONSTRAINT pk_tile_cache_meta PRIMARY KEY (zoom, x, y, server)
-            )
-        """)
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def _make_cached_mapview_class(tkintermapview):
     """Return a TkinterMapView subclass with persistent base/overlay caching."""
-    import requests
-    from PIL import Image, ImageTk, UnidentifiedImageError
+    from PIL import Image, ImageTk
 
     # Pillow 10+ removed Image.ANTIALIAS, while tkintermapview 1.29 still
     # references it in its stock overlay path. Keep the alias for any library
@@ -656,19 +96,17 @@ def _make_cached_mapview_class(tkintermapview):
         """TkinterMapView with a real disk cache for base and overlay tiles."""
 
         _MEMORY_TILE_LIMIT = 2000
-        _NETWORK_RETRY_DELAY_S = 60
 
         def __init__(self, *args, overlay_max_zoom=OPENSEAMAP_MAX_ZOOM, **kwargs):
             database_path = kwargs.get("database_path")
             if database_path:
-                _prepare_tile_cache_database(database_path)
+                prepare_tile_cache_database(database_path)
 
             self.overlay_max_zoom = int(overlay_max_zoom)
             self.depth_layer = None
             self.depth_opacity = LAKE_DEPTH_DEFAULT_OPACITY
-            self._http_local = threading.local()
+            self._tile_source = TileCache()
             self._memory_cache_lock = threading.Lock()
-            self._failed_tile_until = {}
             # TkinterMapView's constructor briefly points at Berlin and queues
             # tiles before the caller can set the real initial position. Suppress
             # those startup network requests; the Halifax redraw below will queue
@@ -778,133 +216,8 @@ def _make_cached_mapview_class(tkintermapview):
             return self.depth_layer.depth_at(lat, lon)
 
         # ------------------------------------------------------------------ #
-        # Network + SQLite helpers
+        # Tile sources (network + SQLite live in tile_cache.TileCache)
         # ------------------------------------------------------------------ #
-
-        def _session(self):
-            session = getattr(self._http_local, "session", None)
-            if session is None:
-                session = requests.Session()
-                session.headers.update({"User-Agent": MAP_USER_AGENT})
-                self._http_local.session = session
-            return session
-
-        @staticmethod
-        def _tile_url(server, zoom, x, y):
-            return (server.replace("{x}", str(x))
-                          .replace("{y}", str(y))
-                          .replace("{z}", str(zoom)))
-
-        @staticmethod
-        def _expires_from_headers(headers, now):
-            cache_control = headers.get("Cache-Control", "")
-            m = re.search(r"(?:^|,)\s*max-age\s*=\s*(\d+)", cache_control,
-                          flags=re.IGNORECASE)
-            if m:
-                return now + max(0, int(m.group(1)))
-
-            expires = headers.get("Expires")
-            if expires:
-                try:
-                    dt = parsedate_to_datetime(expires)
-                    if dt.tzinfo is not None:
-                        return max(now, dt.timestamp())
-                except Exception:
-                    pass
-
-            return now + VIEW_TILE_FALLBACK_TTL_S
-
-        @staticmethod
-        def _configure_thread_db(db_cursor):
-            if db_cursor is None:
-                return
-            try:
-                db_cursor.execute("PRAGMA busy_timeout=5000")
-            except Exception:
-                pass
-
-        def _read_disk_tile(self, db_cursor, server, zoom, x, y):
-            if db_cursor is None:
-                return None, None
-            try:
-                self._configure_thread_db(db_cursor)
-                db_cursor.execute(
-                    "SELECT tile_image FROM tiles "
-                    "WHERE zoom=? AND x=? AND y=? AND server=?",
-                    (zoom, x, y, server))
-                row = db_cursor.fetchone()
-                if row is None:
-                    return None, None
-
-                db_cursor.execute(
-                    "SELECT cached_at, expires_at, etag, last_modified "
-                    "FROM tile_cache_meta "
-                    "WHERE zoom=? AND x=? AND y=? AND server=?",
-                    (zoom, x, y, server))
-                meta = db_cursor.fetchone()
-                return row[0], meta
-            except sqlite3.OperationalError:
-                return None, None
-            except Exception:
-                return None, None
-
-        def _write_disk_tile(self, db_cursor, server, zoom, x, y,
-                             image_bytes, response_headers):
-            if db_cursor is None or image_bytes is None:
-                return
-            now = time.time()
-            expires_at = self._expires_from_headers(response_headers, now)
-            try:
-                self._configure_thread_db(db_cursor)
-                db_cursor.execute(
-                    "INSERT OR IGNORE INTO server (url, max_zoom) VALUES (?, ?)",
-                    (server, self.max_zoom))
-                db_cursor.execute(
-                    "INSERT OR REPLACE INTO tiles "
-                    "(zoom, x, y, server, tile_image) VALUES (?, ?, ?, ?, ?)",
-                    (zoom, x, y, server, sqlite3.Binary(image_bytes)))
-                db_cursor.execute(
-                    "INSERT OR REPLACE INTO tile_cache_meta "
-                    "(zoom, x, y, server, cached_at, expires_at, etag, last_modified) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (zoom, x, y, server, now, expires_at,
-                     response_headers.get("ETag"),
-                     response_headers.get("Last-Modified")))
-                db_cursor.connection.commit()
-            except sqlite3.OperationalError:
-                # A temporary writer collision must not make the map disappear.
-                try:
-                    db_cursor.connection.rollback()
-                except Exception:
-                    pass
-            except Exception:
-                try:
-                    db_cursor.connection.rollback()
-                except Exception:
-                    pass
-
-        def _refresh_disk_meta(self, db_cursor, server, zoom, x, y,
-                               old_meta, response_headers):
-            if db_cursor is None:
-                return
-            now = time.time()
-            expires_at = self._expires_from_headers(response_headers, now)
-            old_etag = old_meta[2] if old_meta else None
-            old_last_modified = old_meta[3] if old_meta else None
-            try:
-                db_cursor.execute(
-                    "INSERT OR REPLACE INTO tile_cache_meta "
-                    "(zoom, x, y, server, cached_at, expires_at, etag, last_modified) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (zoom, x, y, server, now, expires_at,
-                     response_headers.get("ETag") or old_etag,
-                     response_headers.get("Last-Modified") or old_last_modified))
-                db_cursor.connection.commit()
-            except Exception:
-                try:
-                    db_cursor.connection.rollback()
-                except Exception:
-                    pass
 
         @staticmethod
         def _decode_image(image_bytes):
@@ -916,79 +229,9 @@ def _make_cached_mapview_class(tkintermapview):
 
         def _load_source_image(self, server, zoom, x, y, db_cursor):
             """Return one source tile, preferring disk and refreshing if stale."""
-            cached_bytes, meta = self._read_disk_tile(
-                db_cursor, server, zoom, x, y)
-
-            now = time.time()
-            # No metadata means the tile came from OfflineLoader or another
-            # explicit offline source; keep using it without an online refresh.
-            if cached_bytes is not None and meta is None:
-                try:
-                    return self._decode_image(cached_bytes)
-                except Exception:
-                    cached_bytes = None
-
-            # Runtime-cached tile still inside its HTTP/fallback lifetime.
-            if cached_bytes is not None and meta is not None and now < meta[1]:
-                try:
-                    return self._decode_image(cached_bytes)
-                except Exception:
-                    cached_bytes = None
-
-            fail_key = (server, int(zoom), int(x), int(y))
-            if self._failed_tile_until.get(fail_key, 0) > now:
-                if cached_bytes is not None:
-                    try:
-                        return self._decode_image(cached_bytes)
-                    except Exception:
-                        pass
-                return None
-
-            headers = {}
-            if cached_bytes is not None and meta is not None:
-                if meta[2]:
-                    headers["If-None-Match"] = meta[2]
-                if meta[3]:
-                    headers["If-Modified-Since"] = meta[3]
-
-            try:
-                response = self._session().get(
-                    self._tile_url(server, zoom, x, y),
-                    headers=headers, timeout=(3.5, 10))
-
-                if response.status_code == 304 and cached_bytes is not None:
-                    self._refresh_disk_meta(
-                        db_cursor, server, zoom, x, y, meta, response.headers)
-                    self._failed_tile_until.pop(fail_key, None)
-                    return self._decode_image(cached_bytes)
-
-                if response.status_code == 404:
-                    self._failed_tile_until[fail_key] = (
-                        now + self._NETWORK_RETRY_DELAY_S)
-                    return None
-
-                response.raise_for_status()
-                image_bytes = response.content
-
-                # Validate before committing bad HTML/error bodies into SQLite.
-                image = self._decode_image(image_bytes)
-                self._write_disk_tile(
-                    db_cursor, server, zoom, x, y, image_bytes, response.headers)
-                self._failed_tile_until.pop(fail_key, None)
-                return image
-
-            except (requests.RequestException, UnidentifiedImageError,
-                    OSError, ValueError):
-                self._failed_tile_until[fail_key] = (
-                    now + self._NETWORK_RETRY_DELAY_S)
-                # A stale cached tile is much better than a blank map while the
-                # network/server is temporarily unavailable.
-                if cached_bytes is not None:
-                    try:
-                        return self._decode_image(cached_bytes)
-                    except Exception:
-                        pass
-                return None
+            return self._tile_source.get(
+                server, zoom, x, y, db_cursor, decode=self._decode_image,
+                max_zoom=self.max_zoom)
 
         # ------------------------------------------------------------------ #
         # TkinterMapView image request override
@@ -1169,7 +412,7 @@ class MapViewMixin:
                 os.makedirs(LAKE_DEPTH_DIR, exist_ok=True)
             except OSError:
                 pass
-            self._lake_depth_layers = _discover_lake_depth_layers()
+            self._lake_depth_layers = discover_lake_depth_layers()
             layer_bar = ctk.CTkFrame(right, fg_color="transparent")
             layer_bar.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
             layer_bar.grid_columnconfigure(1, weight=1)
@@ -1206,7 +449,7 @@ class MapViewMixin:
             if tkintermapview is not None:
                 default_server = TILE_SERVERS[self.tile_combo.get()]
                 try:
-                    _prepare_tile_cache_database(MAP_CACHE_DB)
+                    prepare_tile_cache_database(MAP_CACHE_DB)
                 except OSError as e:
                     self.append_log(f"** Could not create map cache dir: {e} **")
                 except sqlite3.Error as e:
@@ -1480,7 +723,7 @@ class MapViewMixin:
                 os.makedirs(LAKE_DEPTH_DIR, exist_ok=True)
             except OSError:
                 pass
-            self._lake_depth_layers = _discover_lake_depth_layers()
+            self._lake_depth_layers = discover_lake_depth_layers()
             values = [LAKE_DEPTH_OFF] + list(self._lake_depth_layers.keys())
             self.depth_combo.configure(values=values)
 
@@ -1666,7 +909,7 @@ class MapViewMixin:
 
             def _worker():
                 try:
-                    _prepare_tile_cache_database(MAP_CACHE_DB)
+                    prepare_tile_cache_database(MAP_CACHE_DB)
                     loader = tkintermapview.OfflineLoader(
                         path=MAP_CACHE_DB, tile_server=server_url)
                     loader.save_offline_tiles(top_left, bottom_right,

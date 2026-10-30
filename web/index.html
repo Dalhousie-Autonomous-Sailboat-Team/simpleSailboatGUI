@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Windbound Ground Station</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+<script>
+  // Apply the saved theme before the first paint, so the page never flashes.
+  try { const t = localStorage.getItem('wb-theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
+</head>
+<body>
+<header class="top" id="top">
+  <div class="bar1 wrapx">
+    <a class="brand" href="#live" aria-label="Windbound, Live">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.6 2.2 20 17.2h-7.4z" fill="currentColor"/><path d="M11.2 6.4 5.2 17.2h6z" fill="currentColor" opacity=".5"/><path d="M3.2 18.8h17.6l-1.9 2.6H5.1z" fill="currentColor"/></svg>
+      <span>Windbound</span>
+    </a>
+    <svg class="slash" viewBox="0 0 16 22" aria-hidden="true"><path d="M11 3 5 19" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+    <button class="crumb ica" id="scopeBtn" aria-haspopup="menu" aria-expanded="false"><i data-ic="map"></i><span id="lakeName">No depth grid</span><i data-ic="updown"></i></button>
+    <svg class="slash bar-conn-sl" viewBox="0 0 16 22" aria-hidden="true"><path d="M11 3 5 19" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+    <button class="crumb ica" id="connBtn" aria-haspopup="dialog" aria-expanded="false"><span class="dot off" id="connDot"></span><span id="connName">Not connected</span><span class="meta" id="connMeta"></span><i data-ic="updown"></i></button>
+    <div class="bar1-right">
+      <button class="search ica" id="searchBtn" aria-label="Search or run a command"><i data-ic="search"></i><span class="t">Search or run a command</span><kbd id="cmdKey">⌘K</kbd></button>
+      <button class="btn recbtn ica tip" id="recBtn" data-tip="Start recording · R"><i data-ic="record"></i><span class="rlabel" id="recLabel">Record</span></button>
+      <div class="theme" role="radiogroup" aria-label="Theme">
+        <button class="ica tip" role="radio" data-theme-set="system" aria-checked="true" aria-label="System theme" data-tip="System"><i data-ic="monitor"></i></button>
+        <button class="ica tip" role="radio" data-theme-set="light" aria-checked="false" aria-label="Light theme" data-tip="Light"><i data-ic="sun"></i></button>
+        <button class="ica tip" role="radio" data-theme-set="dark" aria-checked="false" aria-label="Dark theme" data-tip="Dark"><i data-ic="moon"></i></button>
+      </div>
+    </div>
+  </div>
+  <nav class="tabs wrapx" aria-label="Screens">
+    <a class="tab ica" href="#live" data-page="live" aria-current="page"><span class="in"><i data-ic="sail"></i>Live</span></a>
+    <a class="tab ica" href="#route" data-page="route"><span class="in"><i data-ic="route"></i>Route<span class="count" id="tabRouteCount" hidden></span></span></a>
+    <a class="tab ica" href="#logs" data-page="logs"><span class="in"><i data-ic="terminal"></i>Logs</span></a>
+    <a class="tab ica" href="#sessions" data-page="sessions"><span class="in"><i data-ic="history"></i>Sessions</span></a>
+    <a class="tab ica" href="#config" data-page="config"><span class="in"><i data-ic="sliders"></i>Settings</span></a>
+  </nav>
+  <div class="lost" id="lost" hidden><i data-ic="alert"></i><span>Lost the connection to Windbound. Reconnecting… If you stopped it, start it again with <code>python windbound_web.py</code>.</span></div>
+</header>
+
+<main id="main">
+  <!-- LIVE -->
+  <section class="page wrapx" data-page="live" id="p-live">
+    <div class="titlerow">
+      <div class="tt">
+        <h1>Live</h1>
+        <p class="finding" id="finding">Starting…</p>
+      </div>
+      <span class="fresh" id="fresh" hidden><span class="dot" id="freshDot"></span><span id="freshText"></span><span class="sep">·</span><span class="num" id="freshPkt"></span></span>
+    </div>
+
+    <div class="live-grid" id="liveGrid" hidden>
+      <div class="col">
+        <section class="card boat-card" aria-labelledby="boatH">
+          <div class="card-h">
+            <div><h2 id="boatH">Boat</h2><p class="sub">Top view, angles clockwise from the bow</p></div>
+            <div class="legend"><span><i class="sw cmd"></i>Your command</span><span><i class="sw"></i>Boat reports</span><span><i class="sw gap"></i>Gap</span></div>
+          </div>
+          <div class="boat-body">
+            <svg class="boat-svg" id="boatSvg" viewBox="0 0 360 360" role="img" aria-label="Top view of the boat with commanded and reported sail and rudder, and the apparent wind">
+              <g id="ticks"></g>
+              <circle class="water" cx="180" cy="180" r="150"/>
+              <circle class="ring" cx="180" cy="180" r="150"/>
+              <g id="windG">
+                <g class="streaks"><line class="streak" x1="171" y1="6" x2="171" y2="18"/><line class="streak" x1="189" y1="2" x2="189" y2="14"/><line class="streak" x1="180" y1="10" x2="180" y2="22"/></g>
+                <path class="wind" d="M180 8 V40"/>
+                <path class="windhead" d="M180 46 l-5 -9 h10 z"/>
+              </g>
+              <text class="wind-t" id="windT" x="0" y="0" text-anchor="middle">Wind</text>
+              <g id="tgtG"><path class="tgt" d="M180 32 l-5 -8 h10 z"/></g>
+              <text class="tgt-t" id="tgtT" x="0" y="0" text-anchor="middle"></text>
+              <g transform="translate(180 160) scale(1.12) translate(-180 -160)">
+                <path class="hull" d="M180 70 C 207 101, 219 150, 217 200 C 215 241, 209 268, 201 287 L 159 287 C 151 268, 145 241, 143 200 C 141 150, 153 101, 180 70 Z"/>
+                <path class="deck" d="M180 92 C 199 118, 207 152, 205 198 C 204 232, 199 256, 194 272 L 166 272 C 161 256, 156 232, 155 198 C 153 152, 161 118, 180 92 Z"/>
+                <circle class="light-p" cx="164" cy="104" r="2.6"/>
+                <circle class="light-s" cx="196" cy="104" r="2.6"/>
+              </g>
+              <path class="sail-a" id="sailA" d=""/>
+              <path class="gap-arc" id="gapArc" d=""/>
+              <text class="gap-t" id="gapT" x="0" y="0" text-anchor="middle"></text>
+              <line class="boom-c" id="boomC" x1="180" y1="160" x2="180" y2="272"/>
+              <line class="boom-a" id="boomA" x1="180" y1="160" x2="180" y2="272"/>
+              <line class="rud-c" id="rudC" x1="180" y1="302" x2="180" y2="332"/>
+              <line class="rud-a" id="rudA" x1="180" y1="302" x2="180" y2="332"/>
+              <circle class="mast" cx="180" cy="160" r="4.5"/>
+            </svg>
+            <div class="ro">
+              <div class="ro-lead">
+                <div class="hd"><span>Sail</span><span class="pill" id="gapPill">—</span></div>
+                <div class="figs">
+                  <div class="fig"><div class="l"><i class="sw cmd"></i>Your command</div><div class="v" id="figCmd">—</div></div>
+                  <div class="fig"><div class="l"><i class="sw"></i>Boat reports</div><div class="v" id="figAct">—</div></div>
+                </div>
+                <div class="motor"><span id="motorTxt">—</span><button class="linkbtn" id="alignBtn" type="button">Line up with the boat</button></div>
+              </div>
+              <dl class="kv">
+                <div><dt>Rudder</dt><dd><span id="kvRud">—</span> <span class="g">you</span> · <span id="kvTra">—</span> <span class="g">autopilot</span></dd></div>
+                <div><dt>Heading</dt><dd><span id="kvCb">—</span> <span class="g">→</span> <span id="kvTb">—</span> <span class="g" id="kvTbW">target</span></dd></div>
+                <div><dt>Apparent wind</dt><dd><span id="kvWa">—</span> <span class="g" id="kvWaS"></span></dd></div>
+                <div><dt>Position</dt><dd id="kvPos">—</dd></div>
+              </dl>
+              <div class="sticks">
+                <div class="stick"><div class="l"><span>Sail stick</span><b id="stS">—</b></div><div class="track"><span class="fill" id="stSf"></span></div><div class="ends"><span>−45</span><span>+45</span></div></div>
+                <div class="stick"><div class="l"><span>Rudder stick</span><b id="stR">—</b></div><div class="track"><span class="fill" id="stRf"></span></div><div class="ends"><span>−45</span><span>+45</span></div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card trend-card" aria-labelledby="trendH">
+          <h2 class="sr" id="trendH">Trend</h2>
+          <div class="card-h" style="padding-left:16px;padding-right:16px">
+            <div class="ktabs" role="tablist" aria-label="Series">
+              <button class="ktab" role="tab" data-series="cb" aria-selected="true"><span class="kl">Heading</span><span class="kv2" id="kt-cb">—</span></button>
+              <button class="ktab" role="tab" data-series="wa" aria-selected="false"><span class="kl">Apparent wind</span><span class="kv2" id="kt-wa">—</span></button>
+              <button class="ktab" role="tab" data-series="sa" aria-selected="false"><span class="kl">Sail</span><span class="kv2" id="kt-sa">—</span></button>
+              <button class="ktab" role="tab" data-series="tra" aria-selected="false"><span class="kl">Rudder target</span><span class="kv2" id="kt-tra">—</span></button>
+            </div>
+            <span class="period">Last 2 min</span>
+          </div>
+          <div class="chart" id="chart"></div>
+        </section>
+      </div>
+
+      <div class="col">
+        <section class="card link-card" aria-labelledby="linkH">
+          <div class="card-h">
+            <h2 id="linkH">Link</h2>
+            <button class="btn sm ica" id="discBtn"><i data-ic="plug"></i>Disconnect</button>
+          </div>
+          <div class="lrows">
+            <div class="lr">
+              <i data-ic="plug"></i>
+              <div><div class="lr-t">Controller</div><div class="lr-s" id="ctrlDev">—</div></div>
+              <div class="lr-v"><span class="big num" id="lineRate">0.0</span><span class="u"> lines/s</span><div class="lr-s num" id="dropTxt">—</div></div>
+            </div>
+            <div class="lr" style="border-bottom:0;padding-bottom:6px">
+              <i data-ic="radio" id="radioIc"></i>
+              <div><div class="lr-t">XBee telemetry</div><div class="lr-s"><span class="num" id="pktRate">0.0</span> packets/s · <span class="num" id="pktCount">#0</span></div></div>
+              <div class="lr-v"><span class="pill" id="agePill"><span class="dot"></span><span class="num" id="ageTxt">No packets</span></span></div>
+            </div>
+            <div class="strip-wrap">
+              <svg class="strip" id="strip" preserveAspectRatio="none" aria-label="Packet arrivals over the last 60 seconds" role="img"></svg>
+              <div class="strip-ax"><span>60 s ago</span><span id="gapTxt" class="g"></span><span>now</span></div>
+            </div>
+            <label class="lr toggle-row" for="autoConn">
+              <i data-ic="refresh"></i>
+              <div><div class="lr-t">Auto-connect</div><div class="lr-s">Connects when an ST-Link is plugged in</div></div>
+              <span class="switch"><input type="checkbox" id="autoConn" checked><span class="tr"></span></span>
+            </label>
+          </div>
+        </section>
+
+        <section class="card routemini" aria-labelledby="rmH">
+          <div class="card-h">
+            <div><h2 id="rmH">Route</h2><p class="sub" id="rmSub">No waypoints</p></div>
+            <span class="pill" id="rmPill">Not sent</span>
+          </div>
+          <div class="rm-warn" id="rmWarn" hidden><i data-ic="alert"></i><span id="rmWarnT"></span></div>
+          <ul class="rm-list" id="rmList"></ul>
+          <div class="rm-empty" id="rmEmpty" hidden>
+            <div class="t">No route yet</div>
+            <ol>
+              <li>Open the map and right-click the lake, or use Add waypoint.</li>
+              <li>Check each leg's depth against the boat's draft.</li>
+              <li>Send the route to the boat.</li>
+            </ol>
+          </div>
+          <div class="dkey rm-key" id="rmKey"><span><i style="background:var(--deep)"></i>2.5 m+</span><span><i style="background:var(--shallow)"></i>2.0–2.5 m</span><span><i style="background:var(--under)"></i>Under the draft</span><span class="g">Bars: depth along the leg to each waypoint</span></div>
+          <div class="rm-foot">
+            <a class="btn sm ica" href="#route"><i data-ic="map"></i>Open map</a>
+            <span class="grow"></span>
+            <button class="btn sm primary ica" id="rmSend"><i data-ic="send"></i>Send to boat</button>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="offline" id="offline">
+      <div class="offline-in">
+        <div class="offline-ic"><i data-ic="plug" class="pulsing"></i></div>
+        <h2 id="offH">Waiting for the controller</h2>
+        <p id="offP">Plug the ST-Link into this laptop. With auto-connect on, Windbound opens its COM port as soon as it appears.</p>
+        <div class="ports" id="ports"></div>
+        <form class="urlrow" id="urlForm">
+          <label class="sr" for="urlIn">Port or URL</label>
+          <input class="input" id="urlIn" placeholder="COM5, /dev/tty.usbmodem…, or socket://host:port" autocomplete="off" spellcheck="false">
+          <button class="btn" type="submit">Connect</button>
+        </form>
+        <span class="scanning" id="scanning"><i data-ic="refresh" class="spinning"></i>Scanning COM ports every second</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROUTE -->
+  <section class="page page-route" data-page="route" id="p-route" hidden>
+    <div class="route-wrap">
+      <div class="map" id="map" aria-label="Map with the route">
+        <svg class="map-dots" width="100%" height="100%" aria-hidden="true"><defs><pattern id="dotp" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="var(--dots)"/></pattern></defs><rect width="100%" height="100%" fill="url(#dotp)"/></svg>
+        <div class="map-layer map-base" id="lyrBase"></div>
+        <div class="map-layer map-depth" id="lyrDepth"></div>
+        <div class="map-layer map-sea" id="lyrSea"></div>
+        <svg class="map-svg" id="routeSvg" aria-hidden="true"></svg>
+        <div class="markers" id="markers"></div>
+        <div class="mtools tl">
+          <div class="mpanel">
+            <button class="mbtn ica" id="styleBtn" aria-haspopup="menu" aria-expanded="false"><i data-ic="map"></i><span id="styleT">Auto</span></button>
+          </div>
+          <div class="mpanel">
+            <button class="mbtn ica" id="depthTg" aria-pressed="true"><i data-ic="layers"></i>Lake depth</button>
+            <span class="opac"><input type="range" id="opac" min="20" max="100" value="80" aria-label="Depth contour opacity"><span class="num" id="opacV">80%</span></span>
+          </div>
+          <div class="mpanel">
+            <button class="mbtn ica" id="trackTg" aria-pressed="true"><i data-ic="activity"></i>Track</button>
+            <button class="mbtn ica" id="seaTg" aria-pressed="false"><i data-ic="compass"></i>Seamarks</button>
+          </div>
+          <div class="mpanel">
+            <button class="mbtn ica" id="addMode" aria-pressed="false"><i data-ic="pin"></i>Add waypoint</button>
+          </div>
+        </div>
+        <div class="mtools tr">
+          <div class="windb" id="windB" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><g id="windBArrow"><path d="M12 3v14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M12 21l-4-6h8z" fill="currentColor"/></g></svg><span>Wind from <b id="windBT">—</b></span></div>
+          <div class="mpanel col">
+            <button class="mbtn icon ica tip" id="zIn" aria-label="Zoom in" data-tip="Zoom in"><i data-ic="plus"></i></button>
+            <button class="mbtn icon ica tip" id="zOut" aria-label="Zoom out" data-tip="Zoom out"><i data-ic="minus"></i></button>
+            <button class="mbtn icon ica tip" id="zFit" aria-label="Fit the route and the boat" data-tip="Fit route"><i data-ic="crosshair"></i></button>
+          </div>
+        </div>
+        <div class="mscale"><span id="mscaleT">100 m</span><div class="bar" id="mscaleB" style="width:60px"></div></div>
+        <div class="mattr" id="mattr"></div>
+        <div class="mread num" id="mread">—</div>
+        <div class="pop ctx" id="ctx" hidden role="menu">
+          <div class="pop-h num" id="ctxH"></div>
+          <button class="pop-item ica" role="menuitem" data-ctx="add"><i data-ic="pin"></i><span class="grow">Add waypoint here</span></button>
+          <button class="pop-item ica" role="menuitem" data-ctx="move" id="ctxMove" hidden><i data-ic="pin"></i><span class="grow" id="ctxMoveT">Move waypoint here</span></button>
+          <button class="pop-item ica" role="menuitem" data-ctx="depth"><i data-ic="layers"></i><span class="grow">Approx. water depth here</span></button>
+          <button class="pop-item ica" role="menuitem" data-ctx="copy"><i data-ic="copy"></i><span class="grow">Copy coordinates</span></button>
+        </div>
+      </div>
+      <aside class="rpanel" aria-labelledby="routeH">
+        <div class="rp-head">
+          <div class="row"><h1 id="routeH">Route</h1><span class="pill" id="rpPill">Not sent</span></div>
+          <p class="finding" id="rpSub">No waypoints</p>
+        </div>
+        <div class="rp-body scroll-thin">
+          <div class="notices" id="notices"></div>
+          <div class="rp-sec">
+            <h2>Waypoints <span class="s">Drag to reorder · right-click the map to add</span></h2>
+            <ol class="wpl" id="wpl"></ol>
+          </div>
+          <div class="rp-sec">
+            <h2>Depth along each leg <span class="s" id="draftNote">Draft 2.0 m</span></h2>
+            <div class="legs" id="legs"></div>
+            <div class="dkey"><span><i style="background:var(--deep)"></i><span id="keyDeep">2.5 m or deeper</span></span><span><i style="background:var(--shallow)"></i><span id="keyShallow">2.0–2.5 m</span></span><span><i style="background:var(--under)"></i>Under the draft</span><span><i style="background:var(--unknown)"></i>No grid value</span></div>
+          </div>
+        </div>
+        <div class="rp-foot">
+          <button class="btn primary ica" id="sendBtn"><i data-ic="send"></i>Send to boat</button>
+          <button class="btn ica" id="restoreBtn"><i data-ic="undo"></i>Restore</button>
+          <button class="btn ghost danger ica" id="clearBtn"><i data-ic="trash"></i><span id="clearT">Clear</span></button>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- LOGS -->
+  <section class="page wrapx" data-page="logs" id="p-logs" hidden>
+    <div class="titlerow">
+      <div class="tt"><h1>Logs</h1><p class="finding" id="logsSub">The last 5,000 lines from the controller, newest first. Click an XBee line to read its fields.</p></div>
+    </div>
+    <div class="logs-grid">
+      <div class="filters">
+        <div class="fgroup">
+          <div class="h">Line type</div>
+          <label class="fchk"><input type="checkbox" data-type="ctrl" checked><i class="tagdot t-ctrl"></i><span class="grow">Controller status</span><span class="num" id="cnt-ctrl">0</span></label>
+          <label class="fchk"><input type="checkbox" data-type="xbee" checked><i class="tagdot t-xbee"></i><span class="grow">XBee telemetry</span><span class="num" id="cnt-xbee">0</span></label>
+          <label class="fchk"><input type="checkbox" data-type="tx" checked><i class="tagdot t-tx"></i><span class="grow">Sent to boat</span><span class="num" id="cnt-tx">0</span></label>
+          <label class="fchk"><input type="checkbox" data-type="app" checked><i class="tagdot t-app"></i><span class="grow">App messages</span><span class="num" id="cnt-app">0</span></label>
+          <label class="fchk"><input type="checkbox" data-type="other" checked><i class="tagdot t-other"></i><span class="grow">Other lines</span><span class="num" id="cnt-other">0</span></label>
+        </div>
+      </div>
+      <section class="card logcard" aria-labelledby="logsCardH">
+        <h2 class="sr" id="logsCardH">Serial lines</h2>
+        <div class="ltool">
+          <div class="lsearch"><i data-ic="search"></i><input class="input" id="lq" placeholder="Filter, e.g. dropped=1 or XBee" aria-label="Filter lines" autocomplete="off" spellcheck="false"></div>
+          <span class="lmatch" id="lmatch">0 lines</span>
+          <button class="btn sm livebtn" id="liveBtn" aria-pressed="true"><span class="dot live"></span><span id="liveT">Live</span></button>
+          <button class="btn sm ica" id="lclear"><i data-ic="trash"></i>Clear</button>
+        </div>
+        <div class="lhead"><span>Time</span><span>Type</span><span>Line</span></div>
+        <div class="lbody scroll-thin" id="lbody"></div>
+      </section>
+    </div>
+  </section>
+
+  <!-- SESSIONS -->
+  <section class="page wrapx" data-page="sessions" id="p-sessions" hidden>
+    <div class="titlerow">
+      <div class="tt"><h1>Sessions</h1><p class="finding" id="sessSub">Telemetry recordings saved as CSV, one row per packet.</p></div>
+      <button class="btn primary ica" id="sessRec"><i data-ic="record"></i><span id="sessRecT">Start recording</span></button>
+    </div>
+    <section class="card" aria-labelledby="sessH">
+      <h2 class="sr" id="sessH">Recordings</h2>
+      <div class="shead"><span></span><span>File</span><span class="r c-dur">Duration</span><span class="r c-rows">Rows</span><span class="r c-track">Track</span><span class="r c-start">Started</span><span></span></div>
+      <ul class="slist" id="slist"></ul>
+      <div class="stotal"><span id="sTotal">No sessions</span><span>GPX exports a session's GPS track next to its CSV</span></div>
+    </section>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="page wrapx" data-page="config" id="p-config" hidden>
+    <div class="titlerow"><div class="tt"><h1>Settings</h1><p class="finding">Connection settings apply at once and last until Windbound stops.</p></div></div>
+    <div class="set-grid">
+      <nav class="subnav" aria-label="Settings areas">
+        <button data-sv="conn" aria-current="true" class="ica"><i data-ic="plug"></i>Connection</button>
+        <button data-sv="boat" class="ica"><i data-ic="sail"></i>Boat model</button>
+        <button data-sv="safety" class="ica"><i data-ic="layers"></i>Route safety</button>
+        <button data-sv="tiles" class="ica"><i data-ic="download"></i>Offline map</button>
+        <button data-sv="look" class="ica"><i data-ic="sun"></i>Appearance</button>
+      </nav>
+      <div>
+        <div class="sview" data-view="conn">
+          <section class="card scard">
+            <div class="bd">
+              <h2>Serial port</h2>
+              <p class="desc">The controller prints status lines and relays XBee telemetry over its ST-Link virtual COM port. Baud must match its debug UART, or the log fills with garbled text.</p>
+              <div class="frow">
+                <div class="field"><label for="sBaud">Baud</label><span class="selw"><select class="select num" id="sBaud"></select><i data-ic="updown"></i></span></div>
+              </div>
+              <div class="srow2"><div><div class="t">Auto-connect</div><div class="s">Open an ST-Link's port as soon as it is plugged in. Boards already plugged in at launch are left alone.</div></div><span class="switch"><input type="checkbox" id="sAuto" checked aria-label="Auto-connect"><span class="tr"></span></span></div>
+            </div>
+            <div class="ft"><span id="connFt">Ports are scanned every second.</span></div>
+          </section>
+          <section class="card scard">
+            <div class="bd">
+              <h2>Boat simulator</h2>
+              <p class="desc">The firmware-in-the-loop simulator in windbound-firmware/sim speaks the controller's serial protocol on a local socket. Start it, then choose Simulator from the connection menu.</p>
+              <div class="kvrow"><span>Address</span><code id="simUrl">socket://127.0.0.1:5760</code></div>
+            </div>
+          </section>
+        </div>
+        <div class="sview" data-view="boat" hidden>
+          <section class="card scard">
+            <div class="bd">
+              <h2>Commanded sail</h2>
+              <p class="desc">The sail is a continuous-rotation drive, so the stick sets a direction, not an angle. The commanded boat turns its sail at this rate while the stick is out of the dead band, starting from the angle the boat reports.</p>
+              <div class="kvrow"><span>Slew rate</span><b class="num" id="cfgRate">—</b></div>
+              <div class="kvrow"><span>Stick dead band</span><b class="num" id="cfgDead">—</b></div>
+            </div>
+            <div class="ft"><span>Set in <code>station.py</code> (<code>SAIL_ROTATION_RATE_DPS</code>, <code>SAIL_CMD_DEADBAND</code>), shared with the desktop app.</span></div>
+          </section>
+        </div>
+        <div class="sview" data-view="safety" hidden>
+          <section class="card scard">
+            <div class="bd">
+              <h2>Depth limits</h2>
+              <p class="desc">Route legs are sampled every metre against the lake's depth grid and coloured by these limits.</p>
+              <div class="kvrow"><span>Boat draft</span><b class="num" id="cfgDraft">—</b></div>
+              <div class="kvrow"><span>Safe depth</span><b class="num" id="cfgSafe">—</b></div>
+            </div>
+            <div class="ft"><span>Set in <code>route.py</code> (<code>BOAT_DRAFT_M</code>, <code>SAFE_DEPTH_M</code>), shared with the desktop app.</span></div>
+          </section>
+          <section class="card scard">
+            <div class="bd">
+              <h2>Depth grids</h2>
+              <p class="desc">Prepared lakes in <code>lake_depth_maps/</code>. The grids come from historical inventory maps and are approximate.</p>
+              <div class="ports" id="lakeList"></div>
+            </div>
+          </section>
+        </div>
+        <div class="sview" data-view="tiles" hidden>
+          <section class="card scard">
+            <div class="bd">
+              <h2>Offline tiles</h2>
+              <p class="desc">Map tiles are kept as you view them and shown again when there's no signal, so look over the lake once at home before you go. The desktop app uses the same cache.</p>
+              <div class="kvrow"><span>Saved tiles</span><b class="num" id="tileCount">—</b></div>
+              <div class="kvrow"><span>On disk</span><b class="num" id="tileSize">—</b></div>
+            </div>
+            <div class="ft"><span>Stored in <code id="tilePath">map_downloads/tiles.db</code></span></div>
+          </section>
+          <section class="card scard">
+            <div class="bd">
+              <h2>Map style</h2>
+              <p class="desc">Auto shows OpenStreetMap muted to the light or dark theme. None leaves only the depth contours.</p>
+              <div class="frow"><div class="field"><label for="sStyle">Base map</label><span class="selw"><select class="select" id="sStyle"></select><i data-ic="updown"></i></span></div></div>
+            </div>
+            <div class="ft"><span>OpenStreetMap's usage policy doesn't allow saving an area in bulk, so tiles are saved only as you view them.</span></div>
+          </section>
+        </div>
+        <div class="sview" data-view="look" hidden>
+          <section class="card scard">
+            <div class="bd">
+              <h2>Theme</h2>
+              <p class="desc">Light reads better in direct sun at the lake; dark is easier on the eyes for long sessions.</p>
+              <div class="themes" role="radiogroup" aria-label="Theme">
+                <button class="tcard ica" role="radio" data-theme-set="system" aria-checked="true"><div class="tprev"><div class="half lt"><i class="a"></i><i></i><i></i></div><div class="half dk"><i class="a"></i><i></i><i></i></div></div><div class="tl"><i data-ic="monitor"></i>System</div></button>
+                <button class="tcard ica" role="radio" data-theme-set="light" aria-checked="false"><div class="tprev" style="grid-template-columns:1fr"><div class="half lt"><i class="a"></i><i></i><i></i></div></div><div class="tl"><i data-ic="sun"></i>Light</div></button>
+                <button class="tcard ica" role="radio" data-theme-set="dark" aria-checked="false"><div class="tprev" style="grid-template-columns:1fr"><div class="half dk"><i class="a"></i><i></i><i></i></div></div><div class="tl"><i data-ic="moon"></i>Dark</div></button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="dock" id="dock">
+  <div class="dock-bar wrapx">
+    <button class="dock-tg ica" id="dockTg" aria-expanded="false" aria-controls="dockBody"><i data-ic="terminal"></i><span>Serial</span><i data-ic="chev-up" class="chev"></i></button>
+    <code class="dock-line" id="dockLine"></code>
+    <span class="dock-note" id="dockNote"></span>
+    <a class="dock-open ica" href="#logs"><span>Open logs</span><i data-ic="arrow-ur"></i></a>
+  </div>
+  <div class="dock-body wrapx scroll-thin" id="dockBody" hidden></div>
+</footer>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

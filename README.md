@@ -97,9 +97,12 @@ The code is split into modules by feature:
 
 | File | What it does |
 |------|--------------|
-| `sailboat_monitor.py` | Main app and window layout. Run this one. |
+| `sailboat_monitor.py` | Main app and window layout. Run this one (or `windbound_web.py`, below). |
 | `connection.py` | Serial connect/disconnect, port scanning, queue pump, telemetry dispatch. |
 | `map_view.py` | 3D view + GPS map window, tile server management, offline tile downloads. |
+| `route.py` | The waypoint list (`WaypointStore`), draft and safe-depth limits, depth along each leg. Shared by both UIs. |
+| `lake_depth.py` | Lake-inventory depth overlays and their depth grids. Shared by both UIs. |
+| `tile_cache.py` | The SQLite map-tile cache in `map_downloads/`. Shared by both UIs. |
 | `parsing.py` | Reads the controller and telemetry serial lines, formats values. |
 | `serial_io.py` | Detects ST-Link ports, reads the port in a background thread. |
 | `widgets.py` | 2D gauges, top-down boat view, wind rose, trend plot. |
@@ -107,6 +110,10 @@ The code is split into modules by feature:
 | `recording.py` | Saves telemetry to CSV and exports the GPS track as GPX. |
 | `waypoints.py` | Waypoint list shared by the map and the side panel. |
 | `theme.py` | Light/dark color helpers shared by the widgets. |
+| `windbound_web.py` | Starts the web UI (the second option). |
+| `station.py` | The web UI's ground-station core: serial link, telemetry, recording, sessions, route. |
+| `web_server.py` | The web UI's local server on 127.0.0.1. |
+| `web/` | The web UI's page, scripts, styles and fonts. |
 
 ---
 
@@ -178,6 +185,66 @@ see the error message instead of a window that silently never appears.)
 
 ---
 
+## The web UI (a second way to run it)
+
+`windbound_web.py` runs the same ground station with a different interface: a
+Vercel-style screen in your browser, with Live, Route, Logs, Sessions and
+Settings tabs, a command menu (**Ctrl+K**, **⌘K** on a Mac) and a light and a
+dark theme. It needs nothing beyond `requirements.txt`. From the project folder:
+
+```
+python windbound_web.py
+```
+
+It opens as its own window when Microsoft Edge or Google Chrome is installed,
+otherwise in your default browser, at <http://127.0.0.1:8765>. Press **Ctrl+C**
+in the Command Prompt to stop it; that closes the port and finishes any
+recording. Run one UI at a time: both want the same COM port.
+
+| Option | What it does |
+| --- | --- |
+| `--connect COM5` | Open this port at start. Also takes a pyserial URL such as `socket://127.0.0.1:5760`. |
+| `--baud 115200` | Baud for `--connect`. |
+| `--port 8765` | First web port to try; the next free one is used if it's busy. |
+| `--browser` | Open a normal browser tab instead of an app window. |
+| `--no-open` | Don't open anything; just print the address. |
+
+What's on each screen:
+
+- **Live**: the boat drawn from your sticks (dashed) and from the last packet
+  (solid), the gap between them, heading, wind, the link's health with every
+  packet of the last minute, a two-minute trend and the route at a glance.
+- **Route**: the map with the lake's depth contours and the route coloured by
+  depth (blue 2.5 m or deeper, yellow 2.0-2.5 m, red under the 2.0 m draft).
+  Right-click to add a waypoint or ask the depth, drag markers to move them,
+  drag rows to reorder, then **Send to boat**. As in the desktop app, sending
+  logs the payload as a TX line; the radio link isn't wired yet.
+- **Logs**: every line from the controller, newest first. Filter by type or
+  text; click an XBee line to read its fields.
+- **Sessions**: the telemetry CSVs in `logs/`, with GPX export for each.
+- **Settings**: baud, auto-connect, map style and theme, and the values the
+  code sets.
+
+Differences from the desktop app:
+
+- The commanded sail starts at the angle the boat reports, instead of at 0°.
+  **Line up with the boat** on Live re-aligns it if the two drift apart.
+- Positions that arrive as whole degrees (today's firmware sends `clat` and
+  `clon` with `%d`) are shown as truncated and kept off the map, instead of
+  being drawn tens of kilometres away.
+- There's no 3D view.
+- The base map is OpenStreetMap, muted to the theme. CartoDB's free tiles now
+  return an "API key required" image.
+
+**With the boat simulator.** The firmware-in-the-loop simulator in
+`windbound-firmware/sim` speaks the controller's serial protocol on
+`socket://127.0.0.1:5760`. Start it, then pick **Simulator** in the
+connection menu (or run `python windbound_web.py --connect socket://127.0.0.1:5760`).
+The simulator also serves its own page on port 8765, so this UI moves to the
+next free port and prints it.
+
+---
+
 ## Quick start (if you already have Python)
 
 From the project folder:
@@ -191,7 +258,7 @@ python sailboat_monitor.py
 
 ## Notes for tuning
 
-A couple of constants near the top of `sailboat_monitor.py` you may want to adjust:
+A couple of constants in `station.py` (shared by both UIs) you may want to adjust:
 
 - **`SAIL_ROTATION_RATE_DPS`** — slew rate (deg/s) the *commanded* sail is animated at.
 - **`SAIL_CMD_DEADBAND`** — joystick deadband below which the commanded sail holds still.
@@ -220,7 +287,7 @@ measurement accuracy; the depth values remain approximate historical-map estimat
   - yellow: 2.0 m <= estimated depth < 2.5 m
   - red: estimated depth < 2.0 m boat draft
   - grey: no grid value exists at that position
-- `BOAT_DRAFT_M = 2.0` and `SAFE_DEPTH_M = 2.5` are defined in `waypoints.py`.
+- `BOAT_DRAFT_M = 2.0` and `SAFE_DEPTH_M = 2.5` are defined in `route.py`.
 
 Each custom grid contains its own geographic bounds, spacing and nominal uncertainty.
 `prepare_lake_depth.py` now prepares only the visual overlay; it does not perform OCR,

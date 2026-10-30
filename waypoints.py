@@ -5,184 +5,21 @@ subscribe to changes via add_listener() and rebuild their views when
 notified.
 """
 
-import itertools
-import json
-import math
+
 import tkinter as tk
 
 import customtkinter as ctk
 
-
-# Status of a single waypoint.
-STATUS_IDLE    = "idle"     # white  - just in the list
-STATUS_NEXT    = "next"     # yellow - next in line
-STATUS_ACTIVE  = "active"   # green  - currently active
-STATUS_SKIPPED = "skipped"  # red    - skipped by the boat
-
-
-# Sync state of the whole list (drives the banner).
-SYNC_SYNCED      = "synced"
-SYNC_UNSYNCED    = "unsynced"
-SYNC_EMPTY       = "empty"
-SYNC_SKIPPED_HIT = "skipped_hit"
-
-
-# --------------------------------------------------------------------------- #
-# Store
-# --------------------------------------------------------------------------- #
-
-class WaypointStore:
-    """Holds the waypoint list and notifies listeners on every change.
-
-    Keeps a snapshot of the last list sent to the boat so it can tell when
-    the user has unsent changes.
-    """
-
-    def __init__(self):
-        self._items = []        # list of dicts: id, name, lat, lon, status
-        self._synced_snapshot = []  # last list sent to the boat
-        self._listeners = []
-        self._id_counter = itertools.count(1)
-        self._last_skipped_name = None
-
-    # ----- listeners --------------------------------------------------- #
-    def add_listener(self, fn):
-        """Register a callback fn() to be called on every change."""
-        self._listeners.append(fn)
-
-    def _notify(self, structural=True):
-        for fn in self._listeners:
-            try:
-                fn(structural)
-            except TypeError:
-                # Listener accepts no args
-                try:
-                    fn()
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
-    # ----- queries ----------------------------------------------------- #
-    def items(self):
-        """Return a copy of the list (callers shouldn't mutate it directly)."""
-        return list(self._items)
-
-    def count(self):
-        return len(self._items)
-
-    def sync_state(self):
-        """Return (sync_state, detail) for the banner."""
-        if self._last_skipped_name is not None:
-            return SYNC_SKIPPED_HIT, self._last_skipped_name
-        if not self._items:
-            return SYNC_EMPTY, None
-        if self._content_equals_snapshot():
-            # In sync. Surface active waypoint if any.
-            for w in self._items:
-                if w["status"] == STATUS_ACTIVE:
-                    return SYNC_SYNCED, w["name"]
-            return SYNC_SYNCED, None
-        return SYNC_UNSYNCED, None
-
-    def _content_equals_snapshot(self):
-        """Compare current list to last-sent snapshot, ignoring status."""
-        if len(self._items) != len(self._synced_snapshot):
-            return False
-        for a, b in zip(self._items, self._synced_snapshot):
-            for k in ("id", "name", "lat", "lon"):
-                if a[k] != b[k]:
-                    return False
-        return True
-
-    # ----- mutations --------------------------------------------------- #
-    def add(self, lat, lon, name=None):
-        wp = {
-            "id":     next(self._id_counter),
-            "name":   name or f"WP {len(self._items) + 1}",
-            "lat":    float(lat),
-            "lon":    float(lon),
-            "status": STATUS_IDLE,
-        }
-        self._items.append(wp)
-        self._notify(structural=True)
-        return wp
-
-    def remove(self, wp_id):
-        self._items = [w for w in self._items if w["id"] != wp_id]
-        self._notify(structural=True)
-
-    def rename(self, wp_id, new_name):
-        for w in self._items:
-            if w["id"] == wp_id:
-                if w["name"] == new_name:
-                    return
-                w["name"] = new_name
-                self._notify(structural=True)
-                return
-
-    def update_position(self, wp_id, lat, lon):
-        """Move a waypoint to new coordinates."""
-        for w in self._items:
-            if w["id"] == wp_id:
-                w["lat"] = float(lat)
-                w["lon"] = float(lon)
-                self._notify(structural=True)
-                return
-
-    def move(self, from_index, to_index):
-        """Move item at from_index to to_index. Clamps to valid range."""
-        if from_index == to_index:
-            return
-        n = len(self._items)
-        if not (0 <= from_index < n):
-            return
-        to_index = max(0, min(n - 1, to_index))
-        item = self._items.pop(from_index)
-        self._items.insert(to_index, item)
-        self._notify(structural=True)
-
-    def clear(self):
-        self._items = []
-        self._last_skipped_name = None
-        self._notify(structural=True)
-
-    def restore_synced(self):
-        """Replace current list with the last-sent snapshot."""
-        self._items = [dict(w) for w in self._synced_snapshot]
-        self._last_skipped_name = None
-        self._notify(structural=True)
-
-    def mark_synced(self):
-        """Snapshot the current list as the version sent to the boat."""
-        self._synced_snapshot = [dict(w) for w in self._items]
-        self._last_skipped_name = None
-        self._notify(structural=False)
-
-    def set_status(self, wp_id, status):
-        for w in self._items:
-            if w["id"] == wp_id:
-                w["status"] = status
-                if status == STATUS_SKIPPED:
-                    self._last_skipped_name = w["name"]
-                self._notify(structural=False)
-                return
-
-    def clear_skipped_alert(self):
-        self._last_skipped_name = None
-        self._notify(structural=False)
-
-    # ----- export ------------------------------------------------------ #
-    def to_json(self):
-        """Build the JSON payload to send to the boat."""
-        payload = {
-            "waypoints": [
-                {"id": w["id"], "name": w["name"],
-                 "lat": w["lat"], "lon": w["lon"]}
-                for w in self._items
-            ]
-        }
-        return json.dumps(payload)
+# The store, its status constants and the route-depth rules live in route.py
+# so the web UI can share them; they are re-exported here for existing callers.
+from route import (  # noqa: F401
+    STATUS_IDLE, STATUS_NEXT, STATUS_ACTIVE, STATUS_SKIPPED,
+    SYNC_SYNCED, SYNC_UNSYNCED, SYNC_EMPTY, SYNC_SKIPPED_HIT,
+    WaypointStore,
+    BOAT_DRAFT_M, SAFE_DEPTH_M, ROUTE_DEPTH_SAMPLE_M,
+    DEPTH_DEEP, DEPTH_SHALLOW, DEPTH_UNDER, DEPTH_UNKNOWN,
+    route_depth_runs,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -435,17 +272,18 @@ class WaypointPanel(ctk.CTkFrame):
 # Map integration
 # --------------------------------------------------------------------------- #
 
-# Route-depth safety thresholds.  These are deliberately module-level so the
-# map probe and the route renderer use exactly the same values.
-BOAT_DRAFT_M = 2.0
-SAFE_DEPTH_M = 2.5
-
 ROUTE_SAFE_COLOR = "#3b8ed0"       # blue: estimated depth >= SAFE_DEPTH_M
 ROUTE_CAUTION_COLOR = "#e8c43d"    # yellow: BOAT_DRAFT_M .. SAFE_DEPTH_M
 ROUTE_DANGER_COLOR = "#d05b5b"     # red: estimated depth < BOAT_DRAFT_M
 ROUTE_UNKNOWN_COLOR = "#7f8c8d"    # grey: bathymetry enabled, no estimate
-ROUTE_DEPTH_SAMPLE_M = 1.0          # route is depth-tested about every 1 m
 ROUTE_LINE_WIDTH = 5
+
+_ROUTE_COLOURS = {
+    DEPTH_DEEP:    ROUTE_SAFE_COLOR,
+    DEPTH_SHALLOW: ROUTE_CAUTION_COLOR,
+    DEPTH_UNDER:   ROUTE_DANGER_COLOR,
+    DEPTH_UNKNOWN: ROUTE_UNKNOWN_COLOR,
+}
 
 
 class WaypointMapLayer:
@@ -539,34 +377,6 @@ class WaypointMapLayer:
         if len(items) >= 2:
             self._draw_depth_route(items)
 
-    @staticmethod
-    def _distance_m(a, b):
-        """Great-circle distance between two (lat, lon) points in metres."""
-        lat1, lon1 = a
-        lat2, lon2 = b
-        r = 6371000.0
-        p1 = math.radians(lat1)
-        p2 = math.radians(lat2)
-        dp = math.radians(lat2 - lat1)
-        dl = math.radians(lon2 - lon1)
-        h = (math.sin(dp / 2.0) ** 2 +
-             math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0) ** 2)
-        return 2.0 * r * math.asin(min(1.0, math.sqrt(h)))
-
-    @staticmethod
-    def _lerp_position(a, b, t):
-        """Linear lat/lon interpolation, sufficient over individual lake legs."""
-        return (a[0] + (b[0] - a[0]) * t,
-                a[1] + (b[1] - a[1]) * t)
-
-    @staticmethod
-    def _colour_for_depth(depth_m):
-        if depth_m < BOAT_DRAFT_M:
-            return ROUTE_DANGER_COLOR
-        if depth_m < SAFE_DEPTH_M:
-            return ROUTE_CAUTION_COLOR
-        return ROUTE_SAFE_COLOR
-
     def _depth_estimate(self, lat, lon):
         provider = getattr(self.mapview, "depth_estimate_at", None)
         if provider is None:
@@ -585,48 +395,9 @@ class WaypointMapLayer:
     def _build_route_runs(self, items):
         """Return [(colour, [coords...]), ...] for the complete route."""
         depth_active = getattr(self.mapview, "depth_layer", None) is not None
-        runs = []
-        current_colour = None
-        current_coords = []
-
-        def append_segment(p0, p1, colour):
-            nonlocal current_colour, current_coords
-            if current_colour == colour and current_coords:
-                if current_coords[-1] != p0:
-                    current_coords.append(p0)
-                current_coords.append(p1)
-                return
-            if current_coords and len(current_coords) >= 2:
-                runs.append((current_colour, current_coords))
-            current_colour = colour
-            current_coords = [p0, p1]
-
-        for wp_a, wp_b in zip(items, items[1:]):
-            a = (float(wp_a["lat"]), float(wp_a["lon"]))
-            b = (float(wp_b["lat"]), float(wp_b["lon"]))
-            leg_m = self._distance_m(a, b)
-            pieces = max(1, int(math.ceil(leg_m / ROUTE_DEPTH_SAMPLE_M)))
-
-            for i in range(pieces):
-                p0 = self._lerp_position(a, b, i / pieces)
-                p1 = self._lerp_position(a, b, (i + 1) / pieces)
-
-                if not depth_active:
-                    colour = ROUTE_SAFE_COLOR
-                else:
-                    mid = self._lerp_position(p0, p1, 0.5)
-                    estimate = self._depth_estimate(*mid)
-                    if estimate is None:
-                        colour = ROUTE_UNKNOWN_COLOR
-                    else:
-                        colour = self._colour_for_depth(
-                            float(estimate["depth_m"]))
-
-                append_segment(p0, p1, colour)
-
-        if current_coords and len(current_coords) >= 2:
-            runs.append((current_colour, current_coords))
-        return runs
+        depth_at = self._depth_estimate if depth_active else None
+        return [(_ROUTE_COLOURS[cls], coords)
+                for cls, coords in route_depth_runs(items, depth_at)]
 
     def _draw_depth_route(self, items):
         signature = self._route_signature(items)

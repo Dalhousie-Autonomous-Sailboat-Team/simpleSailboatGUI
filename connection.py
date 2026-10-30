@@ -16,17 +16,10 @@ import serial.tools.list_ports
 
 from parsing import parse_sail_rudder, parse_xbee, fmt_value
 from serial_io import is_stlink, SerialReader
-
-
-BAUD_RATES  = ["9600", "19200", "38400", "57600", "115200", "230400", "460800"]
-PORT_POLL_MS = 1000  # how often to scan for COM-port hot-plug / unplug
-
-# The sail is a continuous-rotation drive, not a positional servo: a negative
-# command spins it anti-clockwise (viewed from above), a positive command spins
-# it clockwise, both at a constant slew rate. The COMMANDED boat integrates this
-# over real time instead of treating the stick value as an angle.
-SAIL_ROTATION_RATE_DPS = 72.0  # degrees per second
-SAIL_CMD_DEADBAND      = 2.0   # |command| below this is treated as "stop"
+# Shared with the web UI; station.py documents the commanded-sail model.
+from station import (  # noqa: F401
+    BAUD_RATES, PORT_POLL_MS, SAIL_ROTATION_RATE_DPS, SAIL_CMD_DEADBAND,
+)
 
 
 class ConnectionMixin:
