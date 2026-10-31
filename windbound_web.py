@@ -14,6 +14,11 @@ Options:
                        or a pyserial URL such as socket://127.0.0.1:5760
                        (the boat simulator)
     --baud N           baud for --connect (default 115200)
+    --simulator [DIR]  also run the boat simulator, from a windbound-firmware
+                       checkout (default: the one next to this repository, or
+                       $WINDBOUND_FIRMWARE_DIR), and connect to it; its Mission
+                       control and Firmware checks become tabs. A simulator
+                       that's already running is used instead.
     --browser          open a normal browser tab instead of an app window
     --no-open          don't open anything; just print the address
 """
@@ -27,6 +32,7 @@ import sys
 import threading
 import webbrowser
 
+import simulator
 from station import BAUD_RATES, DEFAULT_BAUD, Station
 from web_server import DEFAULT_PORT, WebServer
 
@@ -64,6 +70,44 @@ def open_page(url, app_window=True):
     return "browser"
 
 
+def start_simulator(station, server, checkout_dir, baud):
+    """Use a simulator that's running, or start one in the background, and
+    connect to it once it answers. Returns the process to stop at exit."""
+    running = simulator.find_running(skip={server.port})
+    if running:
+        page, link_port = running
+        link_url = f"socket://127.0.0.1:{link_port}"
+        station.set_simulator("ready", page, link_url=link_url)
+        ok, msg = station.connect(link_url, baud)
+        print(f"Using the boat simulator already running at {page}" + ("" if ok else f" ({msg})"), flush=True)
+        return None
+    checkout = simulator.find_checkout(checkout_dir)
+    if checkout is None:
+        print("Warning: no windbound-firmware checkout with sim/start.py found. Pass its folder, "
+              "--simulator PATH, or set WINDBOUND_FIRMWARE_DIR.", flush=True)
+        return None
+    proc = simulator.SimulatorProcess(checkout, simulator.free_port(server.port + 1),
+                                      simulator.free_port(simulator.LINK_PORT),
+                                      on_line=lambda line: print(f"  simulator | {line}", flush=True))
+    station.set_simulator("starting", link_url=proc.link_url)
+    print(f"Starting the boat simulator from {checkout} (the first start builds the firmware)...", flush=True)
+    proc.start()
+
+    def connect_when_ready():
+        if not proc.wait_ready():
+            why = proc.why_not()
+            station.set_simulator("failed", message=why)
+            station.note("The simulator didn't start", why, tone="neg")
+            return
+        station.set_simulator("ready", proc.page)
+        ok, msg = station.connect(proc.link_url, baud)
+        station.note("The simulator is running", "Mission control and Firmware checks are in the tabs.",
+                     tone="pos" if ok else "warn")
+
+    threading.Thread(target=connect_when_ready, name="simulator-start", daemon=True).start()
+    return proc
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Windbound ground station, web UI")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -72,6 +116,7 @@ def main(argv=None):
                         choices=[int(b) for b in BAUD_RATES])
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--no-open", action="store_true")
+    parser.add_argument("--simulator", nargs="?", const="", metavar="DIR")
     args = parser.parse_args(argv)
 
     print("Windbound: loading lake depth grids...", flush=True)
@@ -82,6 +127,12 @@ def main(argv=None):
     if args.connect:
         ok, msg = station.connect(args.connect, args.baud)
         print(("" if ok else "Warning: ") + msg, flush=True)
+    sim = None
+    if args.simulator is not None:
+        sim = start_simulator(station, server, args.simulator or None, args.baud)
+    elif simulator.find_checkout():
+        print("Tip: python windbound_web.py --simulator also runs the boat simulator from "
+              f"{simulator.find_checkout()}.", flush=True)
 
     print(f"Windbound is running at {server.url}", flush=True)
     if not args.no_open:
@@ -102,6 +153,9 @@ def main(argv=None):
         print("Stopping: closing the port and any recording...", flush=True)
         server.close()
         station.close()
+        if sim is not None:
+            print("Stopping the simulator...", flush=True)
+            sim.stop()
 
 
 if __name__ == "__main__":

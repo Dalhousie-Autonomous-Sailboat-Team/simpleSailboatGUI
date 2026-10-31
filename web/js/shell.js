@@ -13,7 +13,7 @@ const store = {
 export { store };
 
 /* ---------------- router ---------------- */
-export const PAGES = ['live', 'route', 'logs', 'sessions', 'config'];
+export const PAGES = ['live', 'route', 'logs', 'sessions', 'config', 'mission', 'checks'];   // the last two are the simulator's (sim.js)
 let page = 'live';
 const pageHooks = {};
 export const currentPage = () => page;
@@ -22,13 +22,14 @@ export function onPage(name, fn) { (pageHooks[name] ||= []).push(fn); }
 export function go(p, push = true) {
   if (!PAGES.includes(p)) p = 'live';
   page = p;
-  const main = $('#main'), cur = $(`.page[data-page="${p}"]`);
+  const main = $('#main'), cur = $(`.page[data-page~="${p}"]`);   // a page may serve several tabs
   $$('.page').forEach(s => { s.hidden = s !== cur; });
   if (main.firstElementChild !== cur) main.prepend(cur);   // the shown screen's h1 comes first
   $$('.tab').forEach(t => {
     const isOn = t.dataset.page === p;
     if (isOn) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current');
     if (isOn && push) play(t);
+    if (isOn) t.scrollIntoView({ block: 'nearest', inline: 'nearest' });   // a narrow row of tabs scrolls to the current one
   });
   if (push) { try { history.replaceState(null, '', '#' + p); } catch (e) {} }
   window.scrollTo(0, 0);
@@ -206,6 +207,7 @@ function tickRec() {
 $('#recBtn').addEventListener('click', () => setRecording(!(S.rec && S.rec.active)));
 
 /* ---------------- command menu ---------------- */
+const simKnown = () => Boolean(S.conn && S.conn.sim && S.conn.sim.state !== 'off');
 const commands = [];
 export function addCommands(list) { commands.push(...list); }
 let cmdk = null, cmdIdx = 0, cmdList = [];
@@ -269,6 +271,8 @@ addCommands([
   { g: 'Go to', l: 'Logs', ic: 'terminal', k: ['3'], run: () => go('logs') },
   { g: 'Go to', l: 'Sessions', ic: 'history', k: ['4'], run: () => go('sessions') },
   { g: 'Go to', l: 'Settings', ic: 'sliders', k: ['5'], run: () => go('config') },
+  { g: 'Go to', l: 'Mission control', ic: 'cube', k: ['6'], when: simKnown, run: () => go('mission') },
+  { g: 'Go to', l: 'Firmware checks', ic: 'checks', k: ['7'], when: simKnown, run: () => go('checks') },
   { g: 'Boat', l: () => S.rec && S.rec.active ? 'Stop recording' : 'Start recording', ic: 'record', k: ['R'], run: () => setRecording(!(S.rec && S.rec.active)) },
   { g: 'Connection', l: 'Connect to the simulator', ic: 'cube', when: () => S.conn && S.conn.state !== 'connected', run: () => connectTo(S.config.simulator_url, S.conn.baud) },
   { g: 'Connection', l: () => `Disconnect ${connLabel(S.conn)}`, ic: 'plug', when: () => S.conn && S.conn.state === 'connected', run: disconnect },
@@ -284,7 +288,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { closePop(); emit('escape'); }
   const typing = e.target.closest && e.target.closest('input, select, textarea, [contenteditable]');
   if (typing || cmdk || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (/^[1-5]$/.test(e.key)) go(PAGES[+e.key - 1]);
+  if (/^[1-7]$/.test(e.key) && !$(`.tab[data-page="${PAGES[+e.key - 1]}"]`).hidden) go(PAGES[+e.key - 1]);
   else if (e.key === 'r' || e.key === 'R') { if (e.shiftKey) rescan(); else setRecording(!(S.rec && S.rec.active)); }
 });
 

@@ -113,6 +113,7 @@ The code is split into modules by feature:
 | `windbound_web.py` | Starts the web UI (the second option). |
 | `station.py` | The web UI's ground-station core: serial link, telemetry, recording, sessions, route. |
 | `web_server.py` | The web UI's local server on 127.0.0.1. |
+| `simulator.py` | Finds a running boat simulator, or starts one from windbound-firmware, for the web UI's simulator tabs. |
 | `web/` | The web UI's page, scripts, styles and fonts. |
 
 ---
@@ -206,6 +207,7 @@ recording. Run one UI at a time: both want the same COM port.
 | `--connect COM5` | Open this port at start. Also takes a pyserial URL such as `socket://127.0.0.1:5760`. |
 | `--baud 115200` | Baud for `--connect`. |
 | `--port 8765` | First web port to try; the next free one is used if it's busy. |
+| `--simulator [DIR]` | Also run the boat simulator and connect to it (see below). `DIR` is a windbound-firmware checkout; by default the one next to this folder, or `WINDBOUND_FIRMWARE_DIR`. |
 | `--browser` | Open a normal browser tab instead of an app window. |
 | `--no-open` | Don't open anything; just print the address. |
 
@@ -224,6 +226,9 @@ What's on each screen:
 - **Sessions**: the telemetry CSVs in `logs/`, with GPX export for each.
 - **Settings**: baud, auto-connect, map style and theme, and the values the
   code sets.
+- **Mission control** and **Firmware checks**, while the boat simulator runs:
+  the simulator's own screens (the boat in 3D, run controls, wind and faults,
+  which link the firmware obeys, and every firmware test), shown here.
 
 Differences from the desktop app:
 
@@ -232,16 +237,30 @@ Differences from the desktop app:
 - Positions that arrive as whole degrees (today's firmware sends `clat` and
   `clon` with `%d`) are shown as truncated and kept off the map, instead of
   being drawn tens of kilometres away.
-- There's no 3D view.
+- There's no 3D view of the real boat (the simulator's Mission control has one).
 - The base map is OpenStreetMap, muted to the theme. CartoDB's free tiles now
   return an "API key required" image.
 
 **With the boat simulator.** The firmware-in-the-loop simulator in
-`windbound-firmware/sim` speaks the controller's serial protocol on
-`socket://127.0.0.1:5760`. Start it, then pick **Simulator** in the
-connection menu (or run `python windbound_web.py --connect socket://127.0.0.1:5760`).
-The simulator also serves its own page on port 8765, so this UI moves to the
-next free port and prints it.
+`windbound-firmware/sim` runs the real firmware against a simulated boat and
+speaks the controller's serial protocol on `socket://127.0.0.1:5760`. With
+windbound-firmware checked out next to this folder, one command runs both:
+
+```
+python windbound_web.py --simulator
+```
+
+It starts the simulator (the first start sets up its Python environment and
+builds the firmware, a minute or two), connects to it when it's ready, and
+stops it when you stop this. Its **Mission control** and **Firmware checks**
+then appear as tabs here: they are the simulator's own screens, so they
+always match the simulator you're running. If a simulator is already
+running, it's used instead of starting another.
+
+You can also start the simulator yourself (`python3 sim/start.py` in
+windbound-firmware) and pick **Simulator** in the connection menu; the two
+tabs appear once it's connected. The simulator serves its own page too, on
+port 8765, so this UI moves to the next free port and prints it.
 
 ---
 

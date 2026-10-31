@@ -19,6 +19,9 @@ function render() {
   $('#sBaud').innerHTML = c.baud_rates.map(b => `<option${b === conn.baud ? ' selected' : ''}>${b}</option>`).join('');
   $('#sAuto').checked = conn.autoconnect;
   $('#simUrl').textContent = c.simulator_url;
+  const sim = conn.sim || { state: 'off' };
+  $('#simState').textContent = sim.state === 'ready' ? `Running at ${sim.page}` : sim.state === 'starting' ? 'Starting…'
+    : sim.state === 'failed' ? `Didn't start: ${sim.message}` : 'Not running';
   $('#cfgRate').textContent = `${c.sail_rate_dps.toFixed(1)} °/s`;
   $('#cfgDead').textContent = `±${c.sail_deadband.toFixed(1)}`;
   $('#cfgDraft').textContent = `${c.boat_draft_m.toFixed(1)} m`;

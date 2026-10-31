@@ -38,6 +38,9 @@
     <a class="tab ica" href="#logs" data-page="logs"><span class="in"><i data-ic="terminal"></i>Logs</span></a>
     <a class="tab ica" href="#sessions" data-page="sessions"><span class="in"><i data-ic="history"></i>Sessions</span></a>
     <a class="tab ica" href="#config" data-page="config"><span class="in"><i data-ic="sliders"></i>Settings</span></a>
+    <span class="tab-sep tab-sim" aria-hidden="true" hidden></span>
+    <a class="tab ica tab-sim" href="#mission" data-page="mission" title="The boat simulator: run it and watch the firmware" hidden><span class="in"><i data-ic="cube"></i>Mission control</span></a>
+    <a class="tab ica tab-sim" href="#checks" data-page="checks" title="The boat simulator: prove a firmware change" hidden><span class="in"><i data-ic="checks"></i>Firmware checks<span class="count neg" id="tabChecksCount" hidden></span></span></a>
   </nav>
   <div class="lost" id="lost" hidden><i data-ic="alert"></i><span>Lost the connection to Windbound. Reconnecting… If you stopped it, start it again with <code>python windbound_web.py</code>.</span></div>
 </header>
@@ -311,6 +314,22 @@
     </section>
   </section>
 
+  <!-- THE SIMULATOR'S SCREENS: its own page (windbound-firmware/sim), embedded while it runs -->
+  <section class="page page-sim" data-page="mission checks" id="p-sim" hidden>
+    <iframe class="sim-frame" id="simFrame" title="Boat simulator" allow="fullscreen" hidden></iframe>
+    <div class="sim-wait wrapx" id="simWait">
+      <div class="titlerow"><div class="tt"><h1 id="simH">Mission control</h1><p class="finding">The boat simulator's own screens, from windbound-firmware/sim.</p></div></div>
+      <div class="offline">
+        <div class="offline-in">
+          <div class="offline-ic"><i data-ic="cube" id="simIc"></i></div>
+          <h2 id="simWaitH">The simulator isn't running</h2>
+          <p id="simWaitP">Start the ground station with <code>python windbound_web.py --simulator</code> to run it too, or run <code>python3 sim/start.py</code> in windbound-firmware and connect to Simulator.</p>
+          <button class="btn primary ica" id="simConnect" hidden><i data-ic="plug"></i>Connect to the simulator</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- SETTINGS -->
   <section class="page wrapx" data-page="config" id="p-config" hidden>
     <div class="titlerow"><div class="tt"><h1>Settings</h1><p class="finding">Connection settings apply at once and last until Windbound stops.</p></div></div>
@@ -338,8 +357,9 @@
           <section class="card scard">
             <div class="bd">
               <h2>Boat simulator</h2>
-              <p class="desc">The firmware-in-the-loop simulator in windbound-firmware/sim speaks the controller's serial protocol on a local socket. Start it, then choose Simulator from the connection menu.</p>
+              <p class="desc">The firmware-in-the-loop simulator in windbound-firmware/sim speaks the controller's serial protocol on a local socket. <code>python windbound_web.py --simulator</code> starts it with the ground station and connects; or start it yourself and choose Simulator from the connection menu. While it runs, its Mission control and Firmware checks are tabs here.</p>
               <div class="kvrow"><span>Address</span><code id="simUrl">socket://127.0.0.1:5760</code></div>
+              <div class="kvrow"><span>Its screens</span><b id="simState">Not running</b></div>
             </div>
           </section>
         </div>

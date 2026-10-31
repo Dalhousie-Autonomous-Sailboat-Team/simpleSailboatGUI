@@ -7,6 +7,7 @@ import './route.js';
 import './logs.js';
 import './sessions.js';
 import './settings.js';
+import './sim.js';
 import { startStream } from './api.js';
 
 hydrate();

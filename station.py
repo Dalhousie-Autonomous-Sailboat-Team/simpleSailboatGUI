@@ -10,6 +10,9 @@ page and calls its commands; every command returns (ok, message).
 One background thread drains the serial reader, advances the commanded sail,
 watches for hot-plugged ST-Links and publishes a tick ten times a second.
 Commands arrive on the web server's threads, so all state sits behind one lock.
+
+It also knows about the boat simulator's own page (simulator.py), so the web
+UI can show its Mission control and Firmware checks while one is running.
 """
 
 import os
@@ -18,6 +21,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
+from urllib.parse import urlsplit
 
 import serial
 import serial.tools.list_ports
@@ -28,6 +32,7 @@ from recording import Recorder, export_gpx_from_csv, summarize_csv
 from route import (
     WaypointStore, BOAT_DRAFT_M, SAFE_DEPTH_M, distance_m, leg_depth_profile,
 )
+import simulator
 from serial_io import SerialReader, is_stlink
 from tile_cache import (
     MAP_CACHE_DB, OPENSEAMAP_TILE_SERVER, TILE_SERVERS, TileCache,
@@ -50,8 +55,9 @@ SAIL_ROTATION_RATE_DPS = 72.0  # degrees per second
 SAIL_CMD_DEADBAND      = 2.0   # |command| below this is treated as "stop"
 
 # The boat simulator (windbound-firmware/sim) serves the controller's serial
-# output on this TCP port.
-SIMULATOR_URL = "socket://127.0.0.1:5760"
+# output on this TCP port (windbound_web.py --simulator may pick another).
+SIMULATOR_URL = f"socket://127.0.0.1:{simulator.LINK_PORT}"
+SIM_WATCH_S = 2.0         # how often to look for, or check on, the simulator's page
 
 TICK_S = 0.05             # station loop period
 PUBLISH_S = 0.1           # how often a tick goes to the page
@@ -122,6 +128,12 @@ class Station:
         self.auto_target = None      # ST-Link device we want to auto-connect to
         self._auto_fail_logged = set()
         self.ports = []
+
+        # the boat simulator's page: "off", "starting", "ready" (at page) or "failed"
+        self.simulator_url = SIMULATOR_URL
+        self.sim = {"state": "off", "page": None, "message": ""}
+        self._sim_checked = 0.0
+        self._sim_probe = None
 
         # what the controller and the boat report
         self.status = None           # latest sail/rudder/dropped/overruns
@@ -245,6 +257,7 @@ class Station:
                 if now - last_watch >= PORT_POLL_MS / 1000.0:
                     last_watch = now
                     self._watch_ports()
+                    self._watch_simulator(now)
                 if now - last_publish >= PUBLISH_S:
                     last_publish = now
                     self._publish_tick()
@@ -259,7 +272,7 @@ class Station:
             "now": time.time(),
             "config": {
                 "baud_rates": [int(b) for b in BAUD_RATES],
-                "simulator_url": SIMULATOR_URL,
+                "simulator_url": self.simulator_url,
                 "sail_rate_dps": SAIL_ROTATION_RATE_DPS,
                 "sail_deadband": SAIL_CMD_DEADBAND,
                 "boat_draft_m": BOAT_DRAFT_M,
@@ -363,12 +376,13 @@ class Station:
             "autoconnect": self.autoconnect,
             "ports": self.ports,
             "error": self.conn_error,
+            "sim": dict(self.sim),
         }
 
     def _device_label(self, device):
         if device is None:
             return None
-        if device == SIMULATOR_URL:
+        if device == self.simulator_url:
             return "Simulator"
         return device
 
@@ -382,7 +396,7 @@ class Station:
                 desc = p.description or "Unknown device"
                 ports.append({"device": p.device, "description": desc,
                               "stlink": is_stlink(p), "sim": False})
-            ports.append({"device": SIMULATOR_URL,
+            ports.append({"device": self.simulator_url,
                           "description": "Boat simulator (windbound-firmware/sim)",
                           "stlink": False, "sim": True})
             self.ports = ports
@@ -435,6 +449,47 @@ class Station:
             self.log(f"Connected to {device} at {self.baud} baud")
             self._publish_conn()
             return True, f"Connected to {self._device_label(device)}"
+
+    # ----- the boat simulator's own screens ------------------------------- #
+
+    def set_simulator(self, state, page=None, message="", link_url=None):
+        """Record what is known of the simulator: "off", "starting", "ready"
+        with its page at ``page``, or "failed" with ``message``. ``link_url``
+        is where it plays the controller, when that isn't the usual port."""
+        with self._lock:
+            self.sim = {"state": state, "page": page if state == "ready" else None, "message": message}
+            if link_url and link_url != self.simulator_url:
+                self.simulator_url = link_url
+                self.refresh_ports()
+            self._publish_conn()
+
+    def _watch_simulator(self, now):
+        """Find the page of the simulator this station is connected to, or
+        notice that the one it knew has stopped. Probes run off this loop."""
+        if self.sim["state"] == "starting" or now - self._sim_checked < SIM_WATCH_S:
+            return
+        if self._sim_probe is not None and self._sim_probe.is_alive():
+            return
+        known = self.sim["page"]
+        link_port = simulator.link_port_of(self.device) if self.ser is not None else None
+        if known is None and link_port is None:
+            return
+        self._sim_checked = now
+
+        def look():
+            if known is not None:
+                gone = simulator.probe(urlsplit(known).port) is None
+                found = None
+            else:
+                gone, found = False, simulator.find_running(link_port=link_port)
+            with self._lock:
+                if gone and self.sim["page"] == known:
+                    self.set_simulator("off")
+                elif found and self.sim["page"] is None and self.sim["state"] != "starting":
+                    self.set_simulator("ready", found[0])
+
+        self._sim_probe = threading.Thread(target=look, name="simulator-watch", daemon=True)
+        self._sim_probe.start()
 
     def disconnect(self):
         with self._lock:

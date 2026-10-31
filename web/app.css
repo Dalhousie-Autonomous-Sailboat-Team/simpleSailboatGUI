@@ -103,7 +103,7 @@ code { font-family: var(--mono); }
 .ic .fill { fill: currentColor; stroke: none; }
 .ic-sail .i-sail { transform-origin: 11px 16.5px; }
 .ic-sail .i-jib { transform-origin: 9.6px 16.5px; }
-.ic-route .i-path, .ic-activity .i-beat, .ic-check .i-draw { stroke-dasharray: 1; stroke-dashoffset: 0; }
+.ic-route .i-path, .ic-activity .i-beat, .ic-check .i-draw, .ic-checks .i-tick { stroke-dasharray: 1; stroke-dashoffset: 0; }
 .ic-history .i-hand { transform-origin: 12px 12px; }
 .ic-search .i-lensg { transform-origin: 11px 11px; }
 .ic-refresh .i-spin, .ic-crosshair .i-ch, .ic-sun .i-rays, .ic-moon .i-moon, .ic-compass .i-needle, .ic-alert .i-shake, .ic-record .i-dot, .ic-x .i-x { transform-origin: 12px 12px; }
@@ -179,6 +179,7 @@ code { font-family: var(--mono); }
 .ica:hover .ic-activity .i-beat, .ica:focus-visible .ic-activity .i-beat { animation: draw .9s var(--ease); }
 .ica:hover .ic-alert .i-shake, .ic-alert.shake .i-shake { animation: shake .6s var(--ease); }
 .ica:hover .ic-cube .i-cube, .ica:focus-visible .ic-cube .i-cube, .ica.play .ic-cube .i-cube { animation: cube .7s var(--ease); }
+.ica:hover .ic-checks .i-tick, .ica:focus-visible .ic-checks .i-tick, .ica.play .ic-checks .i-tick { animation: draw .55s var(--ease); }
 .ica:hover .ic-x .i-x { transform: rotate(90deg); transition: transform .3s var(--ease); }
 .ic-x .i-x { transition: transform .3s var(--ease); }
 .ic-check .i-draw { animation: draw .5s var(--ease) both; }
@@ -268,6 +269,9 @@ kbd { font-family: var(--mono); font-size: 11px; line-height: 18px; min-width: 2
 .tab[aria-current="page"] { color: var(--text); }
 .tab[aria-current="page"]::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px 2px 0 0; }
 .tab .count { font-family: var(--mono); font-size: 11px; color: var(--warn-ink); background: var(--warn-bg); padding: 0 6px; border-radius: 999px; line-height: 18px; }
+.tab .count.neg { color: var(--neg-ink); background: var(--neg-bg); }
+/* The simulator's tabs sit apart from the ground station's. */
+.tab-sep { flex: none; width: 1px; margin: 13px 6px; background: var(--border); }
 
 /* ---------- popovers ---------- */
 .pop { position: fixed; z-index: 70; min-width: 260px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--float); padding: 6px; transform-origin: top left; animation: popIn .16s var(--ease); }
@@ -797,3 +801,10 @@ html, body { height: 100%; }
 .tgtm { position: absolute; left: 0; top: 0; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; border: 1.5px dashed var(--accent); pointer-events: none; }
 .map .mread { min-width: 150px; text-align: right; }
 .map-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 360px; text-align: center; color: var(--muted); font-size: 13px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; box-shadow: var(--float); z-index: 2; }
+
+/* ---------- the simulator's screens (sim.js) ---------- */
+/* Its own page fills the screen under the bar, like the route map; it scrolls inside. */
+.page-sim { padding: 0; }
+.sim-frame { display: block; width: 100%; height: calc(100vh - 101px - 37px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); min-height: 560px; border: 0; background: var(--ground); }
+.sim-wait { padding-block: 24px; }
+.sim-wait .offline p code { font-size: 12.5px; color: var(--text); }

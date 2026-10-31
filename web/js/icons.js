@@ -43,6 +43,7 @@ export const I = {
   more: '<circle class="fill" cx="6" cy="12" r="1.5"/><circle class="fill" cx="12" cy="12" r="1.5"/><circle class="fill" cx="18" cy="12" r="1.5"/>',
   cube: '<g class="i-cube"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></g>',
   enter: '<path d="M19 5v7a3 3 0 0 1-3 3H6"/><path d="m9.5 11.5-3.5 3.5 3.5 3.5"/>',
+  checks: '<rect x="4.5" y="4.5" width="15" height="16.5" rx="2.2"/><path d="M9 4.5V3.2h6v1.3"/><path class="i-tick" pathLength="1" d="m8.5 13 2.6 2.6 4.6-5.1"/>',
 };
 export const ic = (n, cls = '', id = '') => `<svg class="ic ic-${n} ${cls}"${id ? ` id="${id}"` : ''} viewBox="0 0 24 24" aria-hidden="true">${I[n] || ''}</svg>`;
 export function hydrate(root = document) { $$('i[data-ic]', root).forEach(el => { el.outerHTML = ic(el.dataset.ic, el.className, el.id); }); }
