@@ -19,6 +19,7 @@ Run:
 """
 
 import queue
+import sys
 import tkinter as tk
 
 import customtkinter as ctk
@@ -513,8 +514,10 @@ class App(ConnectionMixin, MapViewMixin, ctk.CTk):
         ctk.CTkButton(head, text="Clear", width=80,
                       command=self.clear_log).grid(row=0, column=6, padx=4)
 
+        # Consolas only exists on Windows; elsewhere use the system monospace font.
+        log_family = "Consolas" if sys.platform == "win32" else "monospace"
         self.log = ctk.CTkTextbox(self.log_card, font=ctk.CTkFont(
-            family="Consolas", size=12))
+            family=log_family, size=12))
         self.log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         self.log.configure(state="disabled")
 

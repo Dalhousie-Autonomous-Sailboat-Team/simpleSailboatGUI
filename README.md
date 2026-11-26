@@ -147,6 +147,24 @@ see the error message instead of a window that silently never appears.)
 
 ---
 
+## Linux (Arch) quick start
+
+```sh
+./run.sh        # first run creates .venv and installs requirements
+```
+
+- `run.sh` uses `uv` (`pacman -S uv`) with uv's own Python, which bundles Tk.
+  Without uv it falls back to `python3 -m venv`; on Arch that also needs
+  `sudo pacman -S tk`.
+- The controller's ST-Link shows up as `/dev/ttyACM0` (vendor ID 0x0483), so
+  **Auto-connect** finds it the same way it does on Windows.
+- Serial access: your user must be in the `uucp` group
+  (`sudo usermod -aG uucp $USER`, then log out and back in).
+- If ModemManager is running it can grab `/dev/ttyACM*`; stop it with
+  `sudo systemctl disable --now ModemManager`.
+
+---
+
 ## Using it
 
 1. **Plug in the controller** (the STM32 board, via its ST-Link USB). With
