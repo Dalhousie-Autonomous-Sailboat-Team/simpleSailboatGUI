@@ -5,6 +5,8 @@ import threading
 import serial
 import serial.tools.list_ports
 
+MAX_SERIAL_LINE_BYTES = 4096
+
 
 def is_stlink(port) -> bool:
     """True if a pyserial port looks like an ST-Link Virtual COM Port.
@@ -35,14 +37,30 @@ class SerialReader(threading.Thread):
         self.stop_event = stop_event
 
     def run(self):
+        pending = bytearray()
+        discarding = False
         while not self.stop_event.is_set():
             try:
-                raw = self.ser.readline()  # blocks up to the port timeout
+                raw = self.ser.readline(MAX_SERIAL_LINE_BYTES)
             except (serial.SerialException, OSError) as e:
-                self.out_queue.put(("error", f"Serial error: {e}"))
+                self.out_queue.put(("error", (self.stop_event, f"Serial error: {e}")))
                 return
             if not raw:
                 continue
-            line = raw.decode("utf-8", errors="replace").strip("\r\n")
-            if line:
-                self.out_queue.put(("line", line))
+
+            # readline can return a partial line after a serial timeout.
+            if not discarding:
+                if len(pending) + len(raw) <= MAX_SERIAL_LINE_BYTES:
+                    pending.extend(raw)
+                else:
+                    pending.clear()
+                    discarding = True
+            if not raw.endswith(b"\n"):
+                continue
+
+            if not discarding:
+                line = pending.decode("utf-8", errors="replace").rstrip("\r\n")
+                if line:
+                    self.out_queue.put(("line", (self.stop_event, line)))
+            pending.clear()
+            discarding = False
