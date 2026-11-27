@@ -14,7 +14,7 @@ import customtkinter as ctk
 import serial
 import serial.tools.list_ports
 
-from parsing import parse_sail_rudder, parse_xbee, fmt_value
+from parsing import XBEE_API_PREFIX, fmt_value, parse_sail_rudder, parse_xbee, parse_xbee_api
 from serial_io import is_stlink, SerialReader
 
 
@@ -189,6 +189,7 @@ class ConnectionMixin:
                     break
     
             self.stop_event = threading.Event()
+            self.reset_radio_link()
             self.reader = SerialReader(self.ser, self.queue, self.stop_event)
             self.reader.start()
     
@@ -213,6 +214,7 @@ class ConnectionMixin:
             self.ser = None
             self.reader = None
             self.stop_event = None
+            self.reset_radio_link()
             # A manual disconnect (or a cable pull) clears the auto-connect target,
             # so the watcher won't immediately grab the same port again. It will
             # only auto-connect after the device is unplugged and plugged back in.
@@ -234,11 +236,15 @@ class ConnectionMixin:
             try:
                 while True:
                     kind, payload = self.queue.get_nowait()
-                    if kind == "line":
-                        self.handle_line(payload)
-                    elif kind == "error":
-                        self.append_log(f"** {payload} **")
-                        self.disconnect()
+                    if kind in ("line", "error"):
+                        session, message = payload
+                        if session is not self.stop_event:
+                            continue
+                        if kind == "line":
+                            self.handle_line(message)
+                        else:
+                            self.append_log(f"** {message} **")
+                            self.disconnect()
                     elif kind == "log":
                         self.append_log(payload)
                     elif kind == "map_dl_done":
@@ -253,6 +259,16 @@ class ConnectionMixin:
     
         def handle_line(self, line: str):
             self.append_log(line)
+
+            if line.startswith(XBEE_API_PREFIX):
+                frame = parse_xbee_api(line)
+                if frame is not None:
+                    self.update_radio_link(frame)
+                return
+
+            if line == "Sail Controller Ready":
+                self.reset_radio_link()
+                return
     
             sr = parse_sail_rudder(line)
             if sr is not None:
@@ -296,13 +312,16 @@ class ConnectionMixin:
             # positional, so it's applied directly.
             self.cmd_sail_input = float(d["sail"])
             self.cmd_rudder = float(d["rudder"])
-            self.dropped_label.configure(text=str(d["dropped"]))
-            self.overruns_label.configure(text=str(d["overruns"]))
-            # colour the counters if anything is non-zero
-            self.dropped_label.configure(
-                text_color="#d05b5b" if d["dropped"] else "#d0a23b")
-            self.overruns_label.configure(
-                text_color="#d05b5b" if d["overruns"] else "#6c9c6c")
+            for key, label, zero_color in (
+                ("dropped", self.dropped_label, "#d0a23b"),
+                ("overruns", self.overruns_label, "#6c9c6c"),
+            ):
+                value = d.get(key)
+                if value is None:
+                    label.configure(text="—", text_color=("gray45", "gray65"))
+                else:
+                    label.configure(text=str(value),
+                                    text_color="#d05b5b" if value else zero_color)
     
         def update_telemetry(self, d):
             for key, val_label in self.telemetry_labels.items():

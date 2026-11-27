@@ -1,13 +1,17 @@
 """Sailboat Ground Station Monitor.
 
 A CustomTkinter GUI for watching the STM32 joystick controller's serial
-output. It parses two line types over the COM port:
+output. The COM port carries controller status, boat telemetry, and radio frames:
 
-1. Controller status (printed continuously):
+1. Controller status:
        sail=-19  rudder=0  | dropped=0  overruns=0
+       x_raw=1800  offset=-248  angle=-5
 
 2. Telemetry echoed back from the boat over XBee:
        XBee RX: {"tb":0,...,"sa":347}
+
+3. XBee API frames forwarded as hex:
+       XBee API: 7E00028A0075
 
 Run:
     pip install -r requirements.txt
@@ -15,6 +19,7 @@ Run:
 """
 
 import queue
+import sys
 import tkinter as tk
 
 import customtkinter as ctk
@@ -32,6 +37,31 @@ from map_view import MapViewMixin
 # --------------------------------------------------------------------------- #
 
 MAX_LOG_LINES = 200000
+RADIO_MUTED = ("gray42", "gray65")
+TX_STATUS = {
+    0x00: "Success",
+    0x01: "MAC ACK failed",
+    0x02: "Channel busy",
+    0x03: "Message purged",
+    0x21: "Network ACK failed",
+    0x25: "Route not found",
+    0x31: "Internal resource error",
+    0x32: "Out of resources",
+    0x74: "Payload too large",
+    0x75: "Indirect message unrequested",
+}
+MODEM_EVENTS = {
+    0x00: "Power-up / reset",
+    0x01: "Watchdog reset",
+    0x02: "Network joined",
+    0x03: "Network left",
+    0x0B: "Network awake",
+    0x0C: "Network asleep",
+    0x0D: "Supply voltage limit exceeded",
+    0x12: "Access fault",
+    0x13: "Fatal error",
+}
+RX_MODES = {0x40: "Point-to-multipoint", 0x80: "Directed broadcast", 0xC0: "DigiMesh"}
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
@@ -273,16 +303,21 @@ class App(ConnectionMixin, MapViewMixin, ctk.CTk):
 
         head = ctk.CTkFrame(card, fg_color="transparent")
         head.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 2))
-        head.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(head, text="Sailboat Telemetry (XBee RX)",
+        head.grid_columnconfigure(2, weight=1)
+        ctk.CTkLabel(head, text="Sailboat Telemetry",
                      font=ctk.CTkFont(size=13, weight="bold")).grid(
             row=0, column=0, sticky="w")
+        self.rssi_label = ctk.CTkLabel(head, width=0,
+                                       font=ctk.CTkFont(size=12, weight="bold"))
+        self.rssi_label.grid(row=0, column=1, sticky="w", padx=(12, 6))
         self.rx_age_label = ctk.CTkLabel(head, text="no data",
+                                         width=0,
                                          text_color="#888",
                                          font=ctk.CTkFont(size=11))
-        self.rx_age_label.grid(row=0, column=1, sticky="e")
+        self.rx_age_label.grid(row=0, column=2, sticky="e")
+        self._build_radio_link(card)
 
-        row = 1
+        row = 2
         # Two sub-columns: Target/Setpoints on the left, Boat State on the right.
         # This halves the vertical height used by the field list.
         cols_frame = ctk.CTkFrame(card, fg_color="transparent")
@@ -338,6 +373,96 @@ class App(ConnectionMixin, MapViewMixin, ctk.CTk):
         self.trend = TrendPlot(extra)
         self.trend.grid(row=0, column=1, sticky="nsew")
 
+    def _build_radio_link(self, card):
+        link = ctk.CTkFrame(card, corner_radius=6,
+                             fg_color=("#e6e6ec", "#26262e"))
+        link.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 3))
+        link.grid_columnconfigure(0, weight=1)
+        self.radio_labels = {}
+        for row, key in enumerate(("tx", "counters", "rx", "radio")):
+            label = ctk.CTkLabel(link, width=0, height=17, text="", anchor="w",
+                                  justify="left", wraplength=300,
+                                  font=ctk.CTkFont(size=11))
+            label.grid(row=row, column=0, sticky="ew", padx=8)
+            self.radio_labels[key] = label
+
+        def wrap_details(event):
+            width = max(1, int(link._reverse_widget_scaling(event.width)) - 16)
+            for label in self.radio_labels.values():
+                if label.cget("wraplength") != width:
+                    label.configure(wraplength=width)
+
+        link.bind("<Configure>", wrap_details, add="+")
+        self.reset_radio_link()
+
+    def reset_radio_link(self):
+        self.radio_at = {}
+        self.radio_event = None
+        self.rssi_label.configure(text="RSSI  —", text_color=RADIO_MUTED)
+        self.radio_labels["tx"].configure(text="Last TX  —", text_color=RADIO_MUTED)
+        self.radio_labels["rx"].configure(text="Last RX  —")
+        self._show_radio_details()
+
+    def _show_radio_details(self):
+        counters = []
+        for label, command in (("ACK timeouts", "EA"), ("RX errors", "ER"),
+                               ("MAC TX failures", "TR")):
+            value = self.radio_at.get(command)
+            counters.append(f"{label}  {value if value is not None else '—'}")
+        self.radio_labels["counters"].configure(text="  ·  ".join(counters))
+
+        high = self.radio_at.get("DH")
+        low = self.radio_at.get("DL")
+        version = self.radio_at.get("VR")
+        address = f"{high:08X}{low:08X}" if high is not None and low is not None else "—"
+        firmware = f"0x{version:04X}" if version is not None else "—"
+        details = f"Destination  {address}  ·  XBee FW  {firmware}"
+        if self.radio_event is not None:
+            details += f"  ·  Modem {self.radio_event}"
+        self.radio_labels["radio"].configure(text=details)
+
+    def update_radio_link(self, frame):
+        kind = frame["kind"]
+        if kind == "at":
+            command, value = frame["command"], frame["value"]
+            if command == "DB":
+                # DB is the last-packet RSSI magnitude. Zero means no sample.
+                text = f"RSSI  -{value} dBm" if value else "RSSI  —"
+                color = ("#225d87", "#8bc8ff") if value else RADIO_MUTED
+                self.rssi_label.configure(text=text, text_color=color)
+            else:
+                self.radio_at[command] = value
+                self._show_radio_details()
+
+        elif kind == "tx":
+            status, discovery = frame["status"], frame["discovery"]
+            delivery = TX_STATUS.get(status, f"Status 0x{status:02X}")
+            text = f"Last TX  {delivery}  ·  Retries {frame['retries']}"
+            if discovery:
+                route = "Route discovery" if discovery == 0x02 else f"Discovery 0x{discovery:02X}"
+                text += f"  ·  {route}"
+            color = ("#24623b", "#78ce94") if status == 0 else ("#a5303a", "#ff8585")
+            self.radio_labels["tx"].configure(text=text, text_color=color)
+
+        elif kind == "rx":
+            options = frame["options"]
+            mode = RX_MODES.get(options & 0xC0)
+            details = [f"Last RX  {frame['source']}"]
+            if options & 0x01:
+                details.append("ACK")
+            if options & 0x02 and mode != "Directed broadcast":
+                details.append("Broadcast")
+            if mode:
+                details.append(mode)
+            self.radio_labels["rx"].configure(text="  ·  ".join(details))
+
+        elif kind == "modem":
+            status = frame["status"]
+            if status in (0x00, 0x01):
+                self.reset_radio_link()
+            self.radio_event = MODEM_EVENTS.get(status, f"0x{status:02X}")
+            self._show_radio_details()
+
     # ----- bottom: raw log ------------------------------------------------- #
     def _build_log(self):
         self._log_collapsed = False
@@ -389,8 +514,10 @@ class App(ConnectionMixin, MapViewMixin, ctk.CTk):
         ctk.CTkButton(head, text="Clear", width=80,
                       command=self.clear_log).grid(row=0, column=6, padx=4)
 
+        # Consolas only exists on Windows; elsewhere use the system monospace font.
+        log_family = "Consolas" if sys.platform == "win32" else "monospace"
         self.log = ctk.CTkTextbox(self.log_card, font=ctk.CTkFont(
-            family="Consolas", size=12))
+            family=log_family, size=12))
         self.log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         self.log.configure(state="disabled")
 
